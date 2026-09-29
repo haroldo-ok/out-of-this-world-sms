@@ -1,0 +1,21 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+waituntil game_frames >= 20 30000
+screenshot /tmp/ss_20.ppm
+waituntil game_frames >= 50 30000
+screenshot /tmp/ss_50.ppm
+waituntil game_frames >= 70 30000
+screenshot /tmp/ss_70.ppm
+waituntil game_frames >= 90 30000
+screenshot /tmp/ss_90.ppm
+hold right
+waituntil game_frames >= 110 30000
+screenshot /tmp/ss_110.ppm
+waituntil game_frames >= 130 30000
+screenshot /tmp/ss_130.ppm
+waituntil game_frames >= 150 30000
+screenshot /tmp/ss_150.ppm
+waituntil game_frames >= 170 30000
+screenshot /tmp/ss_170.ppm

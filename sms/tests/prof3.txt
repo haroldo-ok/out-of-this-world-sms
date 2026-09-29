@@ -1,0 +1,11 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 300
+profstart
+run 300
+profstop
+profdump /tmp/prof3.txt
+print ff w1
+print pc
+print poly_off

@@ -1,0 +1,9 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 20
+hold up
+waituntil game_frames >= 90 20000
+hold none
+waituntil game_frames >= 110 20000
+print vars w2 0x1FE

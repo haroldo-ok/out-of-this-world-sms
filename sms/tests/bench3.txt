@@ -1,0 +1,21 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+waituntil game_frames >= 90 20000
+hold none
+waituntil game_frames >= 110 20000
+print c_cfull
+print c_cpart
+print c_bgl
+print bg_hits
+profstart
+waituntil game_frames >= 150 20000
+profstop
+print c_cfull
+print c_cpart
+print c_bgl
+print bg_hits
+profdump /tmp/pb2.txt
+screenshot shots/bench2.ppm
+print bg_miss

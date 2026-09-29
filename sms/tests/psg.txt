@@ -1,0 +1,7 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+psglog /tmp/psg.txt
+run 2500
+psgstop

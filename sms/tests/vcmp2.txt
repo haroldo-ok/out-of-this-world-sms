@@ -1,0 +1,9 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 21
+hold up
+waituntil game_frames >= 30 20000
+dumpstate /tmp/sA.bin
+waituntil game_frames >= 60 20000
+dumpstate /tmp/sB.bin

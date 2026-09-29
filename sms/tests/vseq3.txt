@@ -1,0 +1,120 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+waituntil game_frames >= 1 30000
+dumpstate /tmp/d_1.bin
+waituntil game_frames >= 2 30000
+dumpstate /tmp/d_2.bin
+waituntil game_frames >= 3 30000
+dumpstate /tmp/d_3.bin
+waituntil game_frames >= 4 30000
+dumpstate /tmp/d_4.bin
+waituntil game_frames >= 5 30000
+dumpstate /tmp/d_5.bin
+waituntil game_frames >= 6 30000
+dumpstate /tmp/d_6.bin
+waituntil game_frames >= 7 30000
+dumpstate /tmp/d_7.bin
+waituntil game_frames >= 8 30000
+dumpstate /tmp/d_8.bin
+waituntil game_frames >= 9 30000
+dumpstate /tmp/d_9.bin
+waituntil game_frames >= 10 30000
+dumpstate /tmp/d_10.bin
+waituntil game_frames >= 11 30000
+dumpstate /tmp/d_11.bin
+waituntil game_frames >= 12 30000
+dumpstate /tmp/d_12.bin
+waituntil game_frames >= 13 30000
+dumpstate /tmp/d_13.bin
+waituntil game_frames >= 14 30000
+dumpstate /tmp/d_14.bin
+waituntil game_frames >= 15 30000
+dumpstate /tmp/d_15.bin
+waituntil game_frames >= 16 30000
+dumpstate /tmp/d_16.bin
+waituntil game_frames >= 17 30000
+dumpstate /tmp/d_17.bin
+waituntil game_frames >= 18 30000
+dumpstate /tmp/d_18.bin
+waituntil game_frames >= 19 30000
+dumpstate /tmp/d_19.bin
+waituntil game_frames >= 20 30000
+dumpstate /tmp/d_20.bin
+waituntil game_frames >= 21 30000
+dumpstate /tmp/d_21.bin
+waituntil game_frames >= 22 30000
+dumpstate /tmp/d_22.bin
+waituntil game_frames >= 23 30000
+dumpstate /tmp/d_23.bin
+waituntil game_frames >= 24 30000
+dumpstate /tmp/d_24.bin
+waituntil game_frames >= 25 30000
+dumpstate /tmp/d_25.bin
+waituntil game_frames >= 26 30000
+dumpstate /tmp/d_26.bin
+waituntil game_frames >= 27 30000
+dumpstate /tmp/d_27.bin
+waituntil game_frames >= 28 30000
+dumpstate /tmp/d_28.bin
+waituntil game_frames >= 29 30000
+dumpstate /tmp/d_29.bin
+waituntil game_frames >= 30 30000
+dumpstate /tmp/d_30.bin
+waituntil game_frames >= 31 30000
+dumpstate /tmp/d_31.bin
+waituntil game_frames >= 32 30000
+dumpstate /tmp/d_32.bin
+waituntil game_frames >= 33 30000
+dumpstate /tmp/d_33.bin
+waituntil game_frames >= 34 30000
+dumpstate /tmp/d_34.bin
+waituntil game_frames >= 35 30000
+dumpstate /tmp/d_35.bin
+waituntil game_frames >= 36 30000
+dumpstate /tmp/d_36.bin
+waituntil game_frames >= 37 30000
+dumpstate /tmp/d_37.bin
+waituntil game_frames >= 38 30000
+dumpstate /tmp/d_38.bin
+waituntil game_frames >= 39 30000
+dumpstate /tmp/d_39.bin
+waituntil game_frames >= 40 30000
+dumpstate /tmp/d_40.bin
+waituntil game_frames >= 41 30000
+dumpstate /tmp/d_41.bin
+waituntil game_frames >= 42 30000
+dumpstate /tmp/d_42.bin
+waituntil game_frames >= 43 30000
+dumpstate /tmp/d_43.bin
+waituntil game_frames >= 44 30000
+dumpstate /tmp/d_44.bin
+waituntil game_frames >= 45 30000
+dumpstate /tmp/d_45.bin
+waituntil game_frames >= 46 30000
+dumpstate /tmp/d_46.bin
+waituntil game_frames >= 47 30000
+dumpstate /tmp/d_47.bin
+waituntil game_frames >= 48 30000
+dumpstate /tmp/d_48.bin
+waituntil game_frames >= 49 30000
+dumpstate /tmp/d_49.bin
+waituntil game_frames >= 50 30000
+dumpstate /tmp/d_50.bin
+waituntil game_frames >= 51 30000
+dumpstate /tmp/d_51.bin
+waituntil game_frames >= 52 30000
+dumpstate /tmp/d_52.bin
+waituntil game_frames >= 53 30000
+dumpstate /tmp/d_53.bin
+waituntil game_frames >= 54 30000
+dumpstate /tmp/d_54.bin
+waituntil game_frames >= 55 30000
+dumpstate /tmp/d_55.bin
+waituntil game_frames >= 56 30000
+dumpstate /tmp/d_56.bin
+waituntil game_frames >= 57 30000
+dumpstate /tmp/d_57.bin
+waituntil game_frames >= 58 30000
+dumpstate /tmp/d_58.bin

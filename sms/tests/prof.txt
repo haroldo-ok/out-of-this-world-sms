@@ -1,0 +1,8 @@
+symbols obj/game.noi
+run 600
+profstart
+run 3000
+profstop
+profdump /tmp/prof.txt
+print fmv_frames_shown
+print fmv_late_max

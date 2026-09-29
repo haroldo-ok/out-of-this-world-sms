@@ -1,0 +1,13 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 20
+hold up
+run 1500
+hold none
+run 300
+print game_frames
+run 600
+print game_frames
+print bg_miss
+screenshot shots/bench.ppm

@@ -1,0 +1,6 @@
+symbols obj/game.noi
+run 9900
+print fmv_frames_shown
+print fmv_late_max
+expectpace 0
+expect fmv_frames_shown >= 2040

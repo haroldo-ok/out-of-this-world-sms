@@ -1,0 +1,17 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 400
+print game_frames
+print c_poly
+print c_line
+print c_band
+print c_col
+print c_part
+run 600
+print game_frames
+print c_poly
+print c_line
+print c_band
+print c_col
+print c_part

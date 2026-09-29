@@ -1,0 +1,18 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 200
+print ff w1
+print game_frames
+screenshot shots/g0260.ppm
+run 300
+print game_frames
+screenshot shots/g0560.ppm
+hold up
+run 300
+hold none
+print game_frames
+print gfx_alloc_fail
+print vm_bad_op
+screenshot shots/g0860.ppm
+expectpace 0

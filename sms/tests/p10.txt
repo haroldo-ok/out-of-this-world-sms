@@ -1,0 +1,12 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 160 60000
+print bg_hits
+print bg_miss
+profstart
+waituntil game_frames >= 170 60000
+profstop
+print bg_hits
+print bg_miss
+profdump /tmp/p10.txt

@@ -1,0 +1,11 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 60
+hold up
+run 300
+profstart
+run 600
+profstop
+print game_frames
+profdump /tmp/p6.txt

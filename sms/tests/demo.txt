@@ -1,0 +1,21 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 300 60000
+screenshot shots/d300.ppm
+waituntil game_frames >= 500 60000
+screenshot shots/d500.ppm
+waituntil game_frames >= 640 60000
+screenshot shots/d640.ppm
+waituntil stage == 3 60000 w1
+print game_frames
+print bg_hits
+print bg_miss
+print gfx_alloc_fail
+run 400
+screenshot shots/d_cap1.ppm
+run 1200
+screenshot shots/d_cap2.ppm
+waituntil stage == 1 60000 w1
+print intro_plays
+expectpace 0

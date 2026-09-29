@@ -1,0 +1,5 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 700
+dumpstate /tmp/st.bin

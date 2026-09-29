@@ -1,0 +1,9 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 20
+hold up
+run 1500
+hold right
+run 400
+print vars w2 0x1FE

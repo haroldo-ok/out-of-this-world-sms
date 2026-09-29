@@ -1,0 +1,15 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 20
+hold up
+run 1500
+hold right
+run 200
+screenshot shots/q1.ppm
+run 300
+screenshot shots/q2.ppm
+run 300
+screenshot shots/q3.ppm
+print c_poly
+print vars w2 0x67

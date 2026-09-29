@@ -1,0 +1,17 @@
+symbols obj/game.noi
+run 60
+tap 1
+run 90
+print dbg_span
+print dbg_spanret
+print dbg_plot
+print dbg_mask
+print dbg_part
+print dbg_lines
+run 90
+print dbg_span
+print dbg_spanret
+print dbg_plot
+print dbg_mask
+print dbg_part
+print dbg_lines

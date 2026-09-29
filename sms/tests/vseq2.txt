@@ -1,0 +1,78 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+waituntil game_frames >= 58 30000
+dumpstate /tmp/d_58.bin
+waituntil game_frames >= 60 30000
+dumpstate /tmp/d_60.bin
+waituntil game_frames >= 62 30000
+dumpstate /tmp/d_62.bin
+waituntil game_frames >= 64 30000
+dumpstate /tmp/d_64.bin
+waituntil game_frames >= 66 30000
+dumpstate /tmp/d_66.bin
+waituntil game_frames >= 68 30000
+dumpstate /tmp/d_68.bin
+waituntil game_frames >= 70 30000
+dumpstate /tmp/d_70.bin
+waituntil game_frames >= 72 30000
+dumpstate /tmp/d_72.bin
+waituntil game_frames >= 74 30000
+dumpstate /tmp/d_74.bin
+waituntil game_frames >= 76 30000
+dumpstate /tmp/d_76.bin
+waituntil game_frames >= 78 30000
+dumpstate /tmp/d_78.bin
+waituntil game_frames >= 80 30000
+dumpstate /tmp/d_80.bin
+waituntil game_frames >= 82 30000
+dumpstate /tmp/d_82.bin
+waituntil game_frames >= 84 30000
+dumpstate /tmp/d_84.bin
+waituntil game_frames >= 86 30000
+dumpstate /tmp/d_86.bin
+waituntil game_frames >= 88 30000
+dumpstate /tmp/d_88.bin
+waituntil game_frames >= 90 30000
+dumpstate /tmp/d_90.bin
+waituntil game_frames >= 92 30000
+dumpstate /tmp/d_92.bin
+waituntil game_frames >= 94 30000
+dumpstate /tmp/d_94.bin
+waituntil game_frames >= 96 30000
+dumpstate /tmp/d_96.bin
+waituntil game_frames >= 98 30000
+dumpstate /tmp/d_98.bin
+waituntil game_frames >= 100 30000
+dumpstate /tmp/d_100.bin
+waituntil game_frames >= 102 30000
+dumpstate /tmp/d_102.bin
+waituntil game_frames >= 104 30000
+dumpstate /tmp/d_104.bin
+waituntil game_frames >= 106 30000
+dumpstate /tmp/d_106.bin
+waituntil game_frames >= 108 30000
+dumpstate /tmp/d_108.bin
+waituntil game_frames >= 110 30000
+dumpstate /tmp/d_110.bin
+waituntil game_frames >= 112 30000
+dumpstate /tmp/d_112.bin
+waituntil game_frames >= 114 30000
+dumpstate /tmp/d_114.bin
+waituntil game_frames >= 116 30000
+dumpstate /tmp/d_116.bin
+waituntil game_frames >= 118 30000
+dumpstate /tmp/d_118.bin
+waituntil game_frames >= 120 30000
+dumpstate /tmp/d_120.bin
+waituntil game_frames >= 122 30000
+dumpstate /tmp/d_122.bin
+waituntil game_frames >= 124 30000
+dumpstate /tmp/d_124.bin
+waituntil game_frames >= 126 30000
+dumpstate /tmp/d_126.bin
+waituntil game_frames >= 128 30000
+dumpstate /tmp/d_128.bin
+waituntil game_frames >= 130 30000
+dumpstate /tmp/d_130.bin

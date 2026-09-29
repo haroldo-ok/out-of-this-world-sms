@@ -1,0 +1,3 @@
+# name  frames  trace  first_frame  handover_frame
+intro /home/claude/w/cap/intro.bin /home/claude/w/cap/intro.txt 0 2982
+capture /home/claude/w/cap/ending_run.bin /home/claude/w/cap/ending_run.txt 764 1100

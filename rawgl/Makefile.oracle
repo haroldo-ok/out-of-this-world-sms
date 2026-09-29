@@ -1,0 +1,4 @@
+CXXFLAGS := -O2 -g -DBYPASS_PROTECTION -w
+SRCS = bitmap.cpp file.cpp engine.cpp graphics_soft.cpp script.cpp pak.cpp resource.cpp resource_nth.cpp resource_win31.cpp resource_3do.cpp scaler.cpp screenshot.cpp sfxplayer.cpp staticres.cpp unpack.cpp util.cpp video.cpp oracle.cpp
+oracle: $(SRCS:.cpp=.o)
+	$(CXX) -o $@ $^ -lz

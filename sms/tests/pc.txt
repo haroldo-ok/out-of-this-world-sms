@@ -1,0 +1,9 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+run 1500
+hold right
+run 1500
+print psg_mis
+print psg_ticks
