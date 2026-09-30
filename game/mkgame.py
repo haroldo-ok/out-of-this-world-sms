@@ -49,8 +49,20 @@ mo=re.search(r'const uint16_t Graphics::_shapesMaskOffset\[\] = \{(.*?)\};',src,
 md=re.search(r'const uint8_t Graphics::_shapesMaskData\[\] = \{(.*?)\};',src,re.S)
 offs=[int(x,0) for x in re.findall(r'0x[0-9A-Fa-f]+|\d+',mo.group(1))]
 data=bytes(int(x,0) for x in re.findall(r'0x[0-9A-Fa-f]+|\d+',md.group(1)))
-place('MASK',data); H.append('#define NMASKS %d'%len(offs))
-H.append('static const uint16_t mask_off[]={%s};'%','.join(str(x) for x in offs))
+# masks are converted to one run per row: w, h, then h x (x0, x1) with x0 = 0xFF for an empty row
+mdata=bytearray(); moffs=[]
+for o in offs:
+    w,h=data[o],data[o+1]; words=w//16+1; p=o+2; moffs.append(len(mdata)); mdata+=bytes([w,h])
+    for j in range(h):
+        bits=[]
+        for i in range(words):
+            m=(data[p]<<8)|data[p+1]; p+=2
+            bits+=[(m>>(15-b))&1 for b in range(16)]
+        xs=[i for i,b in enumerate(bits) if b]
+        if xs: assert xs[-1]-xs[0]+1==len(xs), 'mask row with several runs'; mdata+=bytes([xs[0],xs[-1]])
+        else: mdata+=b'\xff\xff'
+place('MASK',bytes(mdata)); H.append('#define NMASKS %d'%len(moffs))
+H.append('static const uint16_t mask_off[]={%s};'%','.join(str(x) for x in moffs))
 # coordinate LUTs: AW 320x200 -> 208x136
 XMIN,XMAX,YMIN,YMAX=-512,1023,-384,639
 H.append('#define LUTX_MIN %d\n#define LUTX_MAX %d\n#define LUTY_MIN %d\n#define LUTY_MAX %d'%(XMIN,XMAX,YMIN,YMAX))

@@ -1,0 +1,7 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 763 60000
+print bb_hit
+print bb_miss
+print bb_bad

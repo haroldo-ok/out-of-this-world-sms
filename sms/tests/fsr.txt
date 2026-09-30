@@ -1,0 +1,5 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 764 90000
+print frames_skipped

@@ -1,3 +1,4 @@
+#include <stdlib.h>
 
 /*
  * Another World engine rewrite
@@ -14,6 +15,7 @@
 #include "systemstub.h"
 #include "util.h"
 #include "trace.h"
+int g_heroX = -1, g_heroY = -1, g_heroDraw = 0;
 
 
 Script::Script(Mixer *mix, Resource *res, SfxPlayer *ply, Video *vid)
@@ -478,22 +480,27 @@ void Script::executeTask() {
 			debug(DBG_VIDEO, "vid_opcd_0x80 : opcode=0x%X off=0x%X x=%d y=%d", opcode, off, pt.x, pt.y);
 			_vid->setDataBuffer(_res->_segVideo1, off);
 			TR("shape 1 %d %d %d 64 pg%d", off, pt.x, pt.y, _vid->_buffers[0]);
+			{ extern int g_bb[5]; extern uint32_t g_bbcol; g_bb[0] = g_bb[1] = 30000; g_bb[2] = g_bb[3] = -30000; g_bb[4] = 0; g_bbcol = 0; }
 			bg_shape(_vid->_buffers[0], 1, off, pt.x, pt.y, 64);
 			if (_is3DO) {
 				_vid->drawShape3DO(0xFF, 64, &pt);
 			} else {
 				_vid->drawShape(0xFF, 64, &pt);
+				{ extern int g_bb[5]; extern uint32_t g_bbcol; TR("bb %d %d %d %d %d %x %d", g_bb[0], g_bb[1], g_bb[2], g_bb[3], g_bb[4], g_bbcol, (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) ? 1 : 0); }
 			}
+			g_heroDraw = 0;
 		} else if (opcode & 0x40) {
 			Point pt;
 			const uint8_t offsetHi = _scriptPtr.fetchByte();
 			const uint16_t off = ((offsetHi << 8) | _scriptPtr.fetchByte()) << 1;
 			pt.x = _scriptPtr.fetchByte();
+			g_heroX = g_heroY = -1;
 			_res->_useSegVideo2 = false;
 			if (!(opcode & 0x20)) {
 				if (!(opcode & 0x10)) {
 					pt.x = (pt.x << 8) | _scriptPtr.fetchByte();
 				} else {
+					g_heroX = pt.x;
 					pt.x = _scriptVars[pt.x];
 				}
 			} else {
@@ -506,6 +513,7 @@ void Script::executeTask() {
 				if (!(opcode & 4)) {
 					pt.y = (pt.y << 8) | _scriptPtr.fetchByte();
 				} else {
+					g_heroY = pt.y;
 					pt.y = _scriptVars[pt.y];
 				}
 			}
@@ -524,11 +532,18 @@ void Script::executeTask() {
 			debug(DBG_VIDEO, "vid_opcd_0x40 : off=0x%X x=%d y=%d", off, pt.x, pt.y);
 			_vid->setDataBuffer(_res->_useSegVideo2 ? _res->_segVideo2 : _res->_segVideo1, off);
 			TR("shape %d %d %d %d %d pg%d", _res->_useSegVideo2?2:1, off, pt.x, pt.y, zoom, _vid->_buffers[0]);
+			{ extern int g_bb[5]; extern uint32_t g_bbcol; g_bb[0] = g_bb[1] = 30000; g_bb[2] = g_bb[3] = -30000; g_bb[4] = 0; g_bbcol = 0; }
+			g_heroDraw = (g_heroX == 1 && g_heroY == 2);
+			if (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) TR("herodraw op%02x xv%d yv%d off%d", opcode, g_heroX, g_heroY, off);
 			bg_shape(_vid->_buffers[0], _res->_useSegVideo2?2:1, off, pt.x, pt.y, zoom);
+			static int capHero = getenv("BGCAP") ? 1 : 0;
 			if (_is3DO) {
 				_vid->drawShape3DO(0xFF, zoom, &pt);
+			} else if (g_heroDraw && capHero) {
+				/* capture mode: Lester is a sprite layer on the SMS, cached pages never contain him */
 			} else {
 				_vid->drawShape(0xFF, zoom, &pt);
+				{ extern int g_bb[5]; extern uint32_t g_bbcol; TR("bb %d %d %d %d %d %x %d", g_bb[0], g_bb[1], g_bb[2], g_bb[3], g_bb[4], g_bbcol, (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) ? 1 : 0); }
 			}
 		} else {
 			if (_is3DO) {

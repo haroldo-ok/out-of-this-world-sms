@@ -1,0 +1,7 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 763 90000
+print vram_bad
+print diff_missed
+print gfx_alloc_fail

@@ -1,0 +1,36 @@
+symbols obj/game.noi
+run 60
+tap 1
+hold up
+waituntil game_frames >= 90 30000
+hold right
+waituntil game_frames >= 120 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1
+waituntil game_frames >= 121 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1
+waituntil game_frames >= 122 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1
+waituntil game_frames >= 123 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1
+waituntil game_frames >= 124 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1
+waituntil game_frames >= 125 30000
+print dbg_due
+print dbg_el
+print dbg_np
+print skip_run w1

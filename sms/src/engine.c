@@ -10,6 +10,7 @@
 #include "SMSlib.h"
 #include "engine.h"
 #include "../gen/gamedata.h"
+#include "../gen/constdata.h"
 #include "../gen/bgdata.h"
 
 __sfr __at 0xBF VDPC;
@@ -32,7 +33,10 @@ void slot2_apply(uint8_t s) { if (s >= 0xFE) MAPCTL = 0x08 | ((s & 1) << 2); els
 #define H 136
 #define CW 26
 #define NCELL 442
-#define NT_BLANK 442
+#define NT_BLANK 506      /* all-zero tile in the unused gap of the sprite attribute table (0x3F40) */
+/* 8x8 hero sprite tiles (pattern base 0x2000): VRAM tiles 442-447, 498-501 (nametable rows 25-26, never shown
+   because the hardware shake is limited to +-7 lines), 507 and 509-511 (unused parts of the SAT) */
+static const uint8_t spr_tiles[14] = {186,187,188,189,190,191,242,243,244,245,251,253,254,255};
 
 int16_t vars[256];
 uint16_t tpc[2][64];
@@ -49,6 +53,15 @@ static uint16_t last_disp;
 uint8_t ff;
 
 uint16_t page[4][NCELL];          /* also lent to the FMV player as scratch */
+/* hero sprite canvas ("page 4"): 4 tile rows x 26 columns rendered with the normal rasterizer */
+uint16_t hcan[5 * CW];
+uint16_t *pgp[5];
+uint8_t clip_h = H, hero_mode, hero_bad, hero_pages, hero_cy0, hero_gen, hero_ne, spr_on, spr_gen, bg_hero_next;
+int8_t spr_scroll; int16_t g_oy;
+uint8_t bbm; int16_t bb_x1, bb_y1, bb_x2, bb_y2;
+#ifdef STATS
+uint16_t st_hpoly, st_opoly, st_hmask, st_omask, st_olines, st_hlines, st_ocells;
+#endif
 static uint8_t rcg[1024];      /* bits 0-2 refcount, bits 3-7 generation */
 /* tile ids: 0-15 solid colour, 16-1023 cartridge-RAM tiles (refcounted), >= 1024 read-only ROM tiles */
 #define IS_RAMT(t) ((t) >= 16 && (t) < 1024)
@@ -67,12 +80,17 @@ uint8_t pending(uint8_t p);
 void bg_force(uint8_t i);
 void bg_use(uint8_t p);
 /* ------------------------------------------------------------------ tiles */
+static const uint8_t solid_tiles[16][32] = {
+#define S4(c) (((c)&1)?0xFF:0),(((c)&2)?0xFF:0),(((c)&4)?0xFF:0),(((c)&8)?0xFF:0)
+#define ST(c) {S4(c),S4(c),S4(c),S4(c),S4(c),S4(c),S4(c),S4(c)}
+  ST(0),ST(1),ST(2),ST(3),ST(4),ST(5),ST(6),ST(7),ST(8),ST(9),ST(10),ST(11),ST(12),ST(13),ST(14),ST(15)
+};
 void solid(uint8_t c, uint8_t *d) {
   uint8_t i, p0 = (c & 1) ? 0xFF : 0, p1 = (c & 2) ? 0xFF : 0, p2 = (c & 4) ? 0xFF : 0, p3 = (c & 8) ? 0xFF : 0;
   for (i = 0; i < 8; i++) { *d++ = p0; *d++ = p1; *d++ = p2; *d++ = p3; }
 }
 void load_tile(uint16_t t, uint8_t *d) {
-  if (t < 16) solid((uint8_t)t, d);
+  if (t < 16) memcpy(d, solid_tiles[t], 32);
   else if (t >= 1024) { uint16_t r = t - 1024; map_rom(BGT_BANK0 + (r >> 9)); memcpy(d, (const uint8_t *)(0x8000 + ((r & 511) << 5)), 32); }
   else { map_sram(t >> 9); memcpy(d, TADDR(t), 32); }
 }
@@ -99,22 +117,27 @@ uint8_t vscroll_cur;
 uint16_t pgen[4], pbgen[4];
 /* drow[p][r]: row r of page p changed since p was last displayed; rowstamp[r]: display number of the
    last upload into screen row r; lastdisp[p]: display number when p was last shown */
-uint16_t diff_missed, diff_cell;
+#if defined(VRAMCHECK) || defined(DIFFCHECK)
+uint16_t diff_missed, diff_cell, vram_bad, vb_cell, vb_frame, vb_t, vb_byte;
+#endif
 uint8_t drow[4][17]; uint16_t rowstamp[17], lastdisp[4], dispcount;
-#define TOUCH(p, r) do { pgen[p]++; prow[p][r] = 1; drow[p][r] = 1; } while (0)
-void page_all(uint8_t p) { pgen[p]++; pbase[p] = 0xFF; memset(drow[p], 1, 17); }
+/* prowid[p][r]: ROM row id that row r of page p is known to equal (0xFFFF = unknown/modified) */
+uint16_t prowid[4][17];
+#define TOUCH(p, r) do { if ((p) < 4) { pgen[p]++; prow[p][r] = 1; drow[p][r] = 1; prowid[p][r] = 0xFFFF; } } while (0)
+void page_all(uint8_t p) { pgen[p]++; pbase[p] = 0xFF; memset(drow[p], 1, 17); memset(prowid[p], 0xFF, 34); }
 extern uint8_t pend[4];
 void materialize(uint8_t q);
 void src_changing(uint8_t p);
 /* make page[pg][cell] private and return its tile id (0xFFFF when the pool is full) */
+uint8_t wr_touched;     /* band_flush_ has already marked this band's row: skip TOUCH */
 uint16_t writable(uint8_t pg, uint16_t cell) {
-  uint16_t *pp = page[pg] + cell, t = *pp, n;
-  TOUCH(pg, row_of[cell]);
+  uint16_t *pp = pgp[pg] + cell, t = *pp, n;
+  if (!wr_touched) TOUCH(pg, row_of[cell]);
   if (IS_RAMT(t) && (rcg[t] & 7) == 1) { rcg[t] += 8; return t; }
   n = alloc_tile();
   if (n == 0xFFFF) return n;
-  load_tile(t, tbuf);
-  map_sram(n >> 9); memcpy(TADDR(n), tbuf, 32);
+  if (t < 16) { map_sram(n >> 9); memcpy(TADDR(n), solid_tiles[t], 32); }   /* solid colour: straight from the table */
+  else { load_tile(t, tbuf); map_sram(n >> 9); memcpy(TADDR(n), tbuf, 32); }
   unref(t); *pp = n;
   return n;
 }
@@ -126,11 +149,11 @@ void store_tile(uint8_t pg, uint16_t cell, const uint8_t *d) {
     if (d[i] == 0xFF) c |= 1 << i; else if (d[i] != 0) { ok = 0; break; }
   }
   if (ok) for (i = 4; i < 32; i++) if (d[i] != d[i & 3]) { ok = 0; break; }
-  if (ok) { unref(page[pg][cell]); page[pg][cell] = c; return; }
+  if (ok) { unref(pgp[pg][cell]); pgp[pg][cell] = c; return; }
   n = alloc_tile();
   if (n == 0xFFFF) return;
   map_sram(n >> 9); memcpy(TADDR(n), d, 32);
-  unref(page[pg][cell]); page[pg][cell] = n;
+  unref(pgp[pg][cell]); pgp[pg][cell] = n;
 }
 
 /* ------------------------------------------------------------------ pages */
@@ -178,6 +201,7 @@ void fill_loop(void) __naked {
   __endasm;
 }
 void fill_page(uint8_t pg, uint8_t color) {
+  hero_pages &= ~(1 << pg);
   pscroll[pg] = 0;
   src_changing(pg); pend[pg] = 0xFF;
   page_all(pg);
@@ -187,10 +211,7 @@ uint16_t *cp_sp, *cp_dp, cp_n = 442;
 uint8_t cpr_chg;
 void cpr_loop(void);
 /* copy src->dst row by row, marking only rows that changed as needing a screen check */
-void copy_rows(uint16_t *src, uint8_t dst) {
-  uint8_t r; uint16_t *d = page[dst];
-  for (r = 0; r < 17; r++, src += CW, d += CW) { cp_sp = src; cp_dp = d; cp_n = CW; cpr_chg = 0; cpr_loop(); if (cpr_chg) drow[dst][r] = 1; }
-}
+
 void cpr_loop(void) __naked {
   __asm
     ld hl,(_cp_sp)
@@ -299,6 +320,7 @@ void materialize(uint8_t q) {
 void src_changing(uint8_t p) { uint8_t q; for (q = 0; q < 4; q++) if (pend[q] == p) materialize(q); }
 void copy_page_refs(uint8_t src, uint8_t dst) {
   if (src == dst) return;
+  if (hero_pages & (1 << src)) hero_pages |= 1 << dst; else hero_pages &= ~(1 << dst);
   pscroll[dst] = pscroll[src];
   materialize(src);
   src_changing(dst);
@@ -309,12 +331,21 @@ void copy_now(uint8_t src, uint8_t dst) {
   if (src == dst) return;
   if (pbase[dst] == src && pbgen[dst] == pgen[src]) {     /* dst = src except the rows touched since */
     for (r = 0; r < 17; r++) if (prow[dst][r]) {
-      cp_sp = page[src] + (uint16_t)r * CW; cp_dp = page[dst] + (uint16_t)r * CW; cp_n = CW; cpr_loop();
-      prow[dst][r] = 0; drow[dst][r] = 1;
+      if (prowid[src][r] == 0xFFFF || prowid[src][r] != prowid[dst][r]) {
+        cp_sp = page[src] + (uint16_t)r * CW; cp_dp = page[dst] + (uint16_t)r * CW; cp_n = CW; cpr_loop();
+        drow[dst][r] = 1;
+      }
+      prow[dst][r] = 0; prowid[dst][r] = prowid[src][r];
     }
   } else {
-    copy_rows(page[src], dst);
+    { uint8_t r2; uint16_t *sp2 = page[src], *dp2 = page[dst];
+      for (r2 = 0; r2 < 17; r2++, sp2 += CW, dp2 += CW) {
+        uint16_t id = prowid[src][r2];
+        if (id != 0xFFFF && id == prowid[dst][r2]) continue;        /* both rows equal the same ROM row */
+        cp_sp = sp2; cp_dp = dp2; cp_n = CW; cpr_chg = 0; cpr_loop(); if (cpr_chg) drow[dst][r2] = 1;
+      } }
     memset(prow[dst], 0, 17);
+    memcpy(prowid[dst], prowid[src], 34);
   }
   pbase[dst] = src; pbgen[dst] = pgen[src]; pgen[dst]++;
 }
@@ -331,6 +362,7 @@ void get_row(uint16_t t, uint8_t r, uint8_t *o) {
 void copy_page_scroll(uint8_t src, uint8_t dst, int16_t dy) {
   uint8_t cy, cx, r; int16_t y, sy; uint16_t cell;
   materialize(src); src_changing(dst); materialize(dst);
+  if (hero_pages & (1 << src)) hero_pages |= 1 << dst; else hero_pages &= ~(1 << dst);
   page_all(dst);
   if ((dy & 7) == 0) {
     /* whole-cell shift: pure reference moves */
@@ -416,12 +448,12 @@ void span(int16_t xa, int16_t xb, uint8_t y, uint8_t color) {
   if (xa > xb) { int16_t k = xa; xa = xb; xb = k; }
   if (xa < 0) xa = 0;
   if (xb >= W) xb = W - 1;
-  if (xa > xb || y >= H) return;
+  if (xa > xb || y >= clip_h) return;
   if (color == 0x11 && work == 0) return;
   if (color != span_col) set_span_color(color);
   tx0 = tx = (uint8_t)xa >> 3; tl = (uint8_t)xb >> 3; r = (y & 7) << 2;
   cell = (uint16_t)(y >> 3) * CW + tx;
-  pp = page[work] + cell;
+  pp = pgp[work] + cell;
   for (; tx <= tl; tx++, cell++, pp++) {
     if (tx >= sk0 && tx <= sk1) continue;
     g_m = 0xFF;
@@ -433,8 +465,7 @@ void span(int16_t xa, int16_t xb, uint8_t y, uint8_t color) {
     } else if (color == 0x11) {
       get_row(page[0][cell], r >> 2, src4);
     }
-    if (IS_RAMT(t) && (rcg[t] & 7) == 1) rcg[t] += 8;
-    else { t = writable(work, cell); if (t == 0xFFFF) continue; }
+    t = writable(work, cell); if (t == 0xFFFF) continue;     /* (also marks the row as modified) */
     map_sram(t >> 9);
     p = TADDR(t) + r;
     if (color < 16) plane_write(p);
@@ -449,20 +480,7 @@ uint8_t bxa[8], bxb[8];
 uint8_t bmask, bcolor;
 int16_t band_y0 = -1;
 const uint8_t bittab[8] = {1, 2, 4, 8, 16, 32, 64, 128};
-void band_full(uint8_t ty, uint8_t f0, uint8_t f1) {
-  uint8_t work = buf[0], tx, r; uint16_t cell = (uint16_t)ty * CW + f0, t, *pp = page[work];
-  for (tx = f0; tx <= f1; tx++, cell++) {
-    t = pp[cell];
-    if (bcolor < 16) { if (t != bcolor) { unref(t); pp[cell] = bcolor; } }
-    else if (bcolor == 0x10) {
-      if (t < 16) pp[cell] = t | 8;
-      else { t = writable(work, cell); if (t == 0xFFFF) continue; map_sram(t >> 9); { uint8_t *p = TADDR(t) + 3; for (r = 0; r < 8; r++, p += 4) *p = 0xFF; } }
-    } else if (work != 0) {
-      uint16_t s2 = page[0][cell];
-      if (s2 != t) { REF(s2); unref(t); pp[cell] = s2; }
-    }
-  }
-}
+
 void band_flush_(void);
 void band_flush(void) { T0(2); band_flush_(); T1(2); }
 static uint8_t rowm[8], smp[4];
@@ -663,15 +681,160 @@ void band_lines(void) __naked {
     ret
   __endasm;
 }
+/* colour 0x11: rows of the tile at ar_p take the page-0 tile bytes in tbuf2 where rowm[] is set */
+void apply_rows_src(void) __naked {
+  __asm
+    push ix
+    ld hl,(_ar_p)
+    ld de,#_tbuf2
+    ld ix,#_rowm
+    ld b,#8
+00001$:
+    ld c,0 (ix)
+    inc ix
+    ld a,c
+    or a
+    jr nz,00002$
+    inc hl
+    inc hl
+    inc hl
+    inc hl
+    inc de
+    inc de
+    inc de
+    inc de
+    djnz 00001$
+    pop ix
+    ret
+00002$:
+    ld a,(de)
+    xor (hl)
+    and c
+    xor (hl)
+    ld (hl),a
+    inc hl
+    inc de
+    ld a,(de)
+    xor (hl)
+    and c
+    xor (hl)
+    ld (hl),a
+    inc hl
+    inc de
+    ld a,(de)
+    xor (hl)
+    and c
+    xor (hl)
+    ld (hl),a
+    inc hl
+    inc de
+    ld a,(de)
+    xor (hl)
+    and c
+    xor (hl)
+    ld (hl),a
+    inc hl
+    inc de
+    djnz 00001$
+    pop ix
+    ret
+  __endasm;
+}
+/* gather column cg_tx of the band coverage matrix into rowm[], with AND/OR in cg_an/cg_or */
+uint8_t cg_tx, cg_an, cg_or;
+void col_gather(void) __naked {
+  __asm
+    ld a,(_cg_tx)
+    ld e,a
+    ld d,#0
+    ld hl,#_mm
+    add hl,de
+    ld de,#26
+    ld bc,#0xFF00
+    push ix
+    ld ix,#_rowm
+    ld a,(hl)
+    ld 0 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 1 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 2 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 3 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 4 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 5 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 6 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,(hl)
+    ld 7 (ix),a
+    or c
+    ld c,a
+    ld a,(hl)
+    and b
+    ld b,a
+    add hl,de
+    ld a,b
+    ld (_cg_an),a
+    ld a,c
+    ld (_cg_or),a
+    pop ix
+    ret
+  __endasm;
+}
 void band_flush_(void) {
   uint8_t l, tx, txa = CW, txb = 0, work = buf[0], m, r, an, orr, a, b, ta, tb;
   uint16_t cell, t, *pp; uint8_t *row, f0 = 1, f1 = 0, A = 0, B = 255;
   if (!bmask) { band_y0 = -1; return; }
   band_lines(); txa = bf_txa; txb = bf_txb; A = bf_A; B = bf_B;
   TOUCH(work, (uint8_t)(band_y0 >> 3));
+  wr_touched = 1;
   if (bcolor < 16) { smp[0] = (bcolor & 1) ? 0xFF : 0; smp[1] = (bcolor & 2) ? 0xFF : 0; smp[2] = (bcolor & 4) ? 0xFF : 0; smp[3] = (bcolor & 8) ? 0xFF : 0; }
   if (bmask == 0xFF && B >= A) { f0 = (A + 7) >> 3; f1 = ((uint16_t)B + 1) >> 3; if (f1) f1--; else f0 = 1; }
-  cell = (uint16_t)(band_y0 >> 3) * CW + txa; pp = &page[work][cell];
+  cell = (uint16_t)(band_y0 >> 3) * CW + txa; pp = &pgp[work][cell];
   for (tx = txa; tx <= txb; tx++, cell++, pp++) {
     if (tx >= f0 && tx <= f1) {                /* whole column covered: reference-only fast path */
       t = *pp;
@@ -682,7 +845,7 @@ void band_flush_(void) {
       goto partial;
     }
     an = 0xFF; orr = 0;
-    for (l = 0; l < 8; l++) { m = mm[l][tx]; rowm[l] = m; an &= m; orr |= m; }
+    cg_tx = tx; col_gather(); an = cg_an; orr = cg_or;
     if (!orr) continue;
     t = *pp;
     if (an == 0xFF) {
@@ -699,16 +862,12 @@ void band_flush_(void) {
     ar_p = TADDR(t);
     if (bcolor < 16) apply_rows();
     else if (bcolor == 0x10) { uint8_t *p = ar_p + 3; for (r = 0; r < 8; r++, p += 4) *p |= rowm[r]; }
-    else { uint8_t *p = ar_p, *q = tbuf2; for (r = 0; r < 8; r++) { m = rowm[r]; for (l = 0; l < 4; l++, p++, q++) *p = (*p & ~m) | (*q & m); } }
+    else apply_rows_src();
   }
   { uint8_t *rp = &mm[0][txa], nclr = txb - txa + 1; for (l = 0; l < 8; l++, rp += CW) { uint8_t *q = rp, k2 = nclr; do *q++ = 0; while (--k2); } }
-  bmask = 0; band_y0 = -1;
+  bmask = 0; band_y0 = -1; wr_touched = 0;
 }
-void band_put(int16_t a, int16_t b, uint8_t y) {
-  if ((int16_t)(y & 0xF8) != band_y0) { band_flush(); band_y0 = y & 0xF8; }
-  if (a > b) { int16_t k = a; a = b; b = k; }
-  bxa[y & 7] = a; bxb[y & 7] = b; bmask |= 1 << (y & 7);
-}
+
 
 /* ------------------------------------------------------------------ polygons */
 int16_t tx_(int16_t x) {
@@ -720,7 +879,6 @@ int16_t ty_(int16_t y) {
   return (int16_t)(((int32_t)y * 17 - ((y < 0) ? 24 : 0)) / 25);
 }
 int16_t vx[72], vy[72];
-uint16_t vc_err;
 /* zoom-64 vertex conversion with the coordinate LUT mapped at 0x8000:
    vx[i] = LUTX[x1 + raw[2i]], vy[i] = LUTY[y1 + raw[2i+1]]; raw lives in vy[] (read before written).
    vc_oob is set if any coordinate falls outside the tables (caller then uses the C path). */
@@ -800,12 +958,37 @@ void vconv(void) __naked {
   __endasm;
 }
 static uint16_t poly_off; static uint8_t poly_bank0;
-uint8_t pfetch(void) {
-  uint8_t v;
-  map_rom(poly_bank0 + (poly_off >> 14));
-  v = *(const uint8_t *)(0x8000 | (poly_off & 0x3FFF));
-  poly_off++;
-  return v;
+uint8_t pfetch(void) __naked {
+  __asm
+    ld hl,(_poly_off)
+    ld a,h
+    rlca
+    rlca
+    and #3
+    ld c,a
+    ld a,(_poly_bank0)
+    add a,c
+    ld c,a
+    ld a,(_slot2)
+    cp c
+    jr z,00001$
+    ld a,c
+    ld (_slot2),a
+    xor a
+    ld (#0xFFFC),a
+    ld a,c
+    ld (#0xFFFF),a
+00001$:
+    ld a,h
+    and #0x3F
+    or #0x80
+    ld d,a
+    ld e,l
+    inc hl
+    ld (_poly_off),hl
+    ld a,(de)
+    ret
+  __endasm;
 }
 /* DEHL = DE * BC (unsigned 16x16 -> 32), classic shift-add */
 uint16_t mul_a, mul_b; uint32_t mul_r;
@@ -814,6 +997,14 @@ void mul16u(void) __naked {
     ld de,(_mul_a)
     ld bc,(_mul_b)
     ld hl,#0
+    ld a,d
+    or a
+    jr nz,00010$
+    ld d,e                 ; multiplicand < 256: only its 8 bits need scanning
+    ld e,#0
+    ld a,#8
+    jr 00001$
+00010$:
     ld a,#16
 00001$:
     add hl,hl
@@ -830,14 +1021,6 @@ void mul16u(void) __naked {
     ld (_mul_r+2),de
     ret
   __endasm;
-}
-int32_t calc_step(uint8_t a, uint8_t b, uint16_t *dy) {
-  uint16_t d = (uint16_t)(vy[b] - vy[a]), delta = (d <= 1) ? 1 : d, rc;
-  *dy = d;
-  rc = (delta < 256) ? recip[delta] : (uint16_t)(0x4000 / delta);
-  { int16_t dx = vx[b] - vx[a]; uint8_t neg = dx < 0;
-    mul_a = neg ? (uint16_t)(-dx) : (uint16_t)dx; mul_b = rc; mul16u();
-    return neg ? -(int32_t)(mul_r << 2) : (int32_t)(mul_r << 2); }
 }
 /* ---- scanline stepper: for dp_h lines, record [hi(c1),hi(c2)] clipped to the window into the band arrays */
 uint32_t dp_c1, dp_c2; int32_t dp_s1, dp_s2; uint16_t dp_h; int16_t dp_y; uint8_t dp_stop;
@@ -949,7 +1132,8 @@ void scan_lines(void) __naked {
     inc hl
     ld (_dp_y),hl
     ld a,l
-    cp #136
+    ld hl,#_clip_h
+    cp (hl)
     jp c,00001$
     ld a,#1
     ld (_dp_stop),a
@@ -958,45 +1142,384 @@ void scan_lines(void) __naked {
 }
 void draw_polygon_(uint8_t color, uint8_t n);
 void draw_polygon(uint8_t color, uint8_t n) { T0(3); draw_polygon_(color, n); T1(3); }
+/* ---- polygon edge walk (AW quad-strip algorithm) in asm: dpl_i/dpl_j vertex cursors, dpl_nv remaining */
+uint8_t cs_a, cs_b, dpl_i, dpl_j; int8_t dpl_nv; uint16_t cs_h, cs_rc; int32_t cs_s;
+void cs_divf(void) { cs_rc = (uint16_t)(0x4000 / cs_h); }
+void dp_skip(void) { uint16_t k = (uint16_t)(-dp_y); if (k > dp_h) k = dp_h; dp_c1 += dp_s1 * (int32_t)k; dp_c2 += dp_s2 * (int32_t)k; dp_y += k; dp_h -= k; }
+/* cs_s = ((vx[b]-vx[a]) * (0x4000 / max(1, vy[b]-vy[a]))) << 2, cs_h = vy[b]-vy[a] */
+void calc_step_a(void) __naked {
+  __asm
+    ld a,(_cs_b)
+    add a,a
+    ld e,a
+    ld d,#0
+    ld hl,#_vy
+    add hl,de
+    ld c,(hl)
+    inc hl
+    ld b,(hl)
+    ld a,(_cs_a)
+    add a,a
+    ld e,a
+    ld hl,#_vy
+    add hl,de
+    ld a,c
+    sub (hl)
+    ld c,a
+    inc hl
+    ld a,b
+    sbc a,(hl)
+    ld b,a
+    ld (_cs_h),bc
+    or a
+    jr z,00001$
+    call _cs_divf
+    ld de,(_cs_rc)
+    jr 00003$
+00001$:
+    ld a,c
+    cp #2
+    jr nc,00002$
+    ld c,#1
+00002$:
+    ld l,c
+    ld h,#0
+    add hl,hl
+    ld de,#_recip
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+00003$:
+    ld (_mul_b),de
+    ld a,(_cs_b)
+    add a,a
+    ld e,a
+    ld d,#0
+    ld hl,#_vx
+    add hl,de
+    ld c,(hl)
+    inc hl
+    ld b,(hl)
+    ld a,(_cs_a)
+    add a,a
+    ld e,a
+    ld hl,#_vx
+    add hl,de
+    ld a,c
+    sub (hl)
+    ld c,a
+    inc hl
+    ld a,b
+    sbc a,(hl)
+    ld b,a
+    ld h,b
+    ld l,c
+    bit 7,h
+    jr z,00004$
+    xor a
+    sub l
+    ld l,a
+    ld a,#0
+    sbc a,h
+    ld h,a
+00004$:
+    push bc
+    ld (_mul_a),hl
+    call _mul16u
+    ld hl,(_mul_r)
+    ld de,(_mul_r+2)
+    add hl,hl
+    rl e
+    rl d
+    add hl,hl
+    rl e
+    rl d
+    pop bc
+    bit 7,b
+    jr z,00005$
+    xor a
+    sub l
+    ld l,a
+    ld a,#0
+    sbc a,h
+    ld h,a
+    ld a,#0
+    sbc a,e
+    ld e,a
+    ld a,#0
+    sbc a,d
+    ld d,a
+00005$:
+    ld (_cs_s),hl
+    ld (_cs_s+2),de
+    ret
+  __endasm;
+}
+void dpl_loop(void) __naked {
+  __asm
+00001$:
+    ld a,(_dpl_nv)
+    sub #2
+    ld (_dpl_nv),a
+    jp z,00090$
+    jp m,00090$
+    ld a,(_dpl_j)
+    ld (_cs_b),a
+    inc a
+    ld (_cs_a),a
+    call _calc_step_a
+    ld hl,(_cs_s)
+    ld (_dp_s1),hl
+    ld hl,(_cs_s+2)
+    ld (_dp_s1+2),hl
+    ld a,(_dpl_i)
+    ld (_cs_b),a
+    dec a
+    ld (_cs_a),a
+    call _calc_step_a
+    ld hl,(_cs_s)
+    ld (_dp_s2),hl
+    ld hl,(_cs_s+2)
+    ld (_dp_s2+2),hl
+    ld hl,#_dpl_i
+    inc (hl)
+    ld hl,#_dpl_j
+    dec (hl)
+    ld hl,#0x7FFF
+    ld (_dp_c1),hl
+    ld hl,#0x8000
+    ld (_dp_c2),hl
+    ld hl,(_cs_h)
+    ld a,h
+    or l
+    jr nz,00010$
+    ld hl,(_dp_c1)
+    ld de,(_dp_s1)
+    add hl,de
+    ld (_dp_c1),hl
+    ld hl,(_dp_c1+2)
+    ld de,(_dp_s1+2)
+    adc hl,de
+    ld (_dp_c1+2),hl
+    ld hl,(_dp_c2)
+    ld de,(_dp_s2)
+    add hl,de
+    ld (_dp_c2),hl
+    ld hl,(_dp_c2+2)
+    ld de,(_dp_s2+2)
+    adc hl,de
+    ld (_dp_c2+2),hl
+    jp 00001$
+00010$:
+    ld (_dp_h),hl
+    ld a,(_dp_y+1)
+    bit 7,a
+    jr z,00011$
+    call _dp_skip
+    ld hl,(_dp_h)
+    ld a,h
+    or l
+    jp z,00001$
+00011$:
+    xor a
+    ld (_dp_stop),a
+    call _scan_lines
+    ld a,(_dp_stop)
+    or a
+    jp z,00001$
+00090$:
+    jp _band_flush
+  __endasm;
+}
 void draw_polygon_(uint8_t color, uint8_t n) {
-  uint8_t i = 0, j = n - 1;
-  int16_t x1 = vx[j], x2 = vx[0], y = (vy[0] < vy[j]) ? vy[0] : vy[j];
-  uint32_t c1, c2; int32_t s1, s2; uint16_t h;
-  int8_t nv = n;
-  ++i; --j;
+  uint8_t j = n - 1;
   bcolor = color; bmask = 0; band_y0 = -1;
   if (color == 0x11 && buf[0] == 0) return;
-  c1 = (uint32_t)(int32_t)x1 << 16; c2 = (uint32_t)(int32_t)x2 << 16;
-  for (;;) {
-    nv -= 2;
-    if (nv <= 0) { band_flush(); return; }
-    s1 = calc_step(j + 1, j, &h);
-    s2 = calc_step(i - 1, i, &h);
-    ++i; --j;
-    c1 = (c1 & 0xFFFF0000UL) | 0x7FFF;
-    c2 = (c2 & 0xFFFF0000UL) | 0x8000;
-    if (h == 0) { c1 += s1; c2 += s2; }
-    else {
-      if (y < 0) {                      /* skip scanlines above the window in one step */
-        uint16_t k = (uint16_t)(-y); if (k > h) k = h;
-        c1 += s1 * (int32_t)k; c2 += s2 * (int32_t)k; y += k; h -= k;
-      }
-      if (h) {
-        dp_c1 = c1; dp_c2 = c2; dp_s1 = s1; dp_s2 = s2; dp_h = h; dp_y = y; dp_stop = 0;
-        scan_lines();
-        c1 = dp_c1; c2 = dp_c2; y = dp_y;
-        if (dp_stop) { band_flush(); return; }
-      }
-    }
-  }
+  dp_c1 = (uint32_t)(int32_t)vx[j] << 16; dp_c2 = (uint32_t)(int32_t)vx[0] << 16;
+  dp_y = (vy[0] < vy[j]) ? vy[0] : vy[j];
+  dpl_nv = (int8_t)n; dpl_i = 1; dpl_j = n - 2;
+  dpl_loop();
+}
+/* one pixel (x < W, y < clip_h) into the work page: particles and single-point shapes */
+void pix(uint8_t x, uint8_t y, uint8_t color) {
+  uint8_t work = buf[0], m = 0x80 >> (x & 7), ty = y >> 3, *p;
+  uint16_t cell = ((uint16_t)ty << 4) + ((uint16_t)ty << 3) + ((uint16_t)ty << 1) + (x >> 3), t = pgp[work][cell];
+  if (color < 16) { if (t == color) return; }
+  else if (color == 0x11) { if (work == 0) return; get_row(page[0][cell], y & 7, src4); }
+  t = writable(work, cell); if (t == 0xFFFF) return;
+  map_sram(t >> 9);
+  p = TADDR(t) + ((y & 7) << 2);
+  if (color < 16) {
+    if (color & 1) p[0] |= m; else p[0] &= ~m;
+    if (color & 2) p[1] |= m; else p[1] &= ~m;
+    if (color & 4) p[2] |= m; else p[2] &= ~m;
+    if (color & 8) p[3] |= m; else p[3] &= ~m;
+  } else if (color == 0x10) p[3] |= m;
+  else { p[0] = (p[0] & ~m) | (src4[0] & m); p[1] = (p[1] & ~m) | (src4[1] & m); p[2] = (p[2] & ~m) | (src4[2] & m); p[3] = (p[3] & ~m) | (src4[3] & m); }
 }
 void plot(int16_t ax, int16_t ay, uint8_t color) {
-  int16_t x = tx_(ax), y = ty_(ay);
-  if (x >= 0 && x < W && y >= 0 && y < H) span(x, x, (uint8_t)y, color);
+  if (bbm) { if (ax < bb_x1) bb_x1 = ax; if (ax > bb_x2) bb_x2 = ax; if (ay < bb_y1) bb_y1 = ay; if (ay > bb_y2) bb_y2 = ay; return; }
+  int16_t x = tx_(ax), y = ty_(ay) - g_oy;
+  if (hero_mode && (y < 0 || y >= (int16_t)clip_h)) { hero_bad = 1; return; }
+  if (x >= 0 && x < W && y >= 0 && y < (int16_t)clip_h) pix((uint8_t)x, (uint8_t)y, color);
 }
 #define SCL(v, z) ((z) == 64 ? (int16_t)(v) : ((z) < 256 ? (int16_t)(((uint16_t)(v) * (z)) >> 6) : (int16_t)(((uint32_t)(v) * (z)) >> 6)))
 void bg_force(uint8_t i);
+/* ---- common case of fill_polygon in asm: zoom 64, not the hero canvas, not the bbox walk, colours 0-15 */
+uint8_t fp_color, fp_n, fp_bbw, fp_bbh; int16_t fp_px, fp_py, fp_x1, fp_y1; uint16_t fp_off0;
+void fill_polygon_c(uint8_t color, uint16_t zoom, int16_t px, int16_t py);
+#ifdef STATS
+uint16_t st_c0, st_c1, st_c2, st_c3, st_c4, st_c5;
+#endif
+void fp_slow(void) {
+#ifdef STATS
+  st_c5++;
+#endif
+  poly_off = fp_off0; fill_polygon_c(fp_color, 64, fp_px, fp_py); }
+void fp_draw(void) { draw_polygon(fp_color, fp_n); }
+void fp_plot(void) { plot(fp_px, fp_py, fp_color); }
+void fp_fast(void) __naked {
+  __asm
+    ld hl,(_poly_off)
+    ld (_fp_off0),hl
+    ld a,h
+    and #0x3F
+    cp #0x3F
+    jp z,00090$            ; header or vertices might cross a bank boundary: C path
+    call _pfetch
+    ld (_fp_bbw),a
+    call _pfetch
+    ld (_fp_bbh),a
+    call _pfetch
+    ld (_fp_n),a
+    ; x1 = px - bbw/2, cull x1 > 319
+    ld a,(_fp_bbw)
+    srl a
+    ld e,a
+    ld d,#0
+    ld hl,(_fp_px)
+    or a
+    sbc hl,de
+    ld (_fp_x1),hl
+    ld bc,#320
+    ld a,h
+    xor #0x80
+    ld h,a
+    ld a,b
+    xor #0x80
+    ld b,a
+    or a
+    sbc hl,bc
+    ret nc                 ; x1 >= 320
+    ; x2 = px + bbw/2 < 0 ?
+    ld hl,(_fp_px)
+    add hl,de
+    bit 7,h
+    ret nz
+    ; y1 = py - bbh/2, cull y1 > 199
+    ld a,(_fp_bbh)
+    srl a
+    ld e,a
+    ld hl,(_fp_py)
+    or a
+    sbc hl,de
+    ld (_fp_y1),hl
+    ld bc,#200
+    ld a,h
+    xor #0x80
+    ld h,a
+    ld a,b
+    xor #0x80
+    ld b,a
+    or a
+    sbc hl,bc
+    ret nc
+    ld hl,(_fp_py)
+    add hl,de
+    bit 7,h
+    ret nz
+    ; n even and <= 70
+    ld a,(_fp_n)
+    bit 0,a
+    ret nz
+    cp #71
+    ret nc
+    or a
+    ret z
+    ; single point -> C path (plot)
+    cp #4
+    jr nz,00010$
+    ld a,(_fp_bbw)
+    or a
+    jr nz,00010$
+    ld a,(_fp_bbh)
+    cp #2
+    jp c,_fp_plot           ; single point
+00010$:
+    ; copy 2n vertex bytes to vy[] (staging): only if they stay inside the bank
+    ld hl,(_poly_off)
+    ld a,(_fp_n)
+    add a,a
+    ld c,a
+    ld b,#0
+    ld a,h
+    and #0x3F
+    ld d,a
+    ld e,l
+    ex de,hl
+    add hl,bc
+    ld a,h
+    cp #0x40
+    jp nc,00090$           ; crosses the bank end
+    ld a,d
+    and #0x3F
+    or #0x80
+    ld h,a
+    ld l,e
+    ld de,#_vy
+    ldir
+    ; convert with the LUT bank mapped
+    ld a,#LUT_BANK
+    ld (_slot2),a
+    xor a
+    ld (#0xFFFC),a
+    ld a,#LUT_BANK
+    ld (#0xFFFF),a
+    ld hl,#_vy
+    ld (_vc_raw),hl
+    ld a,(_fp_n)
+    ld (_vc_n),a
+    ld hl,(_fp_x1)
+    ld (_vc_x1),hl
+    ld hl,(_fp_y1)
+    ld (_vc_y1),hl
+    call _vconv
+    ld a,(_vc_oob)
+    or a
+    jp nz,00090$
+    jp _fp_draw
+00090$:
+    jp _fp_slow
+  __endasm;
+}
 void fill_polygon(uint8_t color, uint16_t zoom, int16_t px, int16_t py) {
+#ifdef STATS
+  if (bbm) st_c0++; else if (hero_mode) st_c1++; else if (zoom != 64) st_c2++; else if (color >= 16) st_c3++; else st_c4++;
+#endif
+  if (zoom == 64 && !bbm && !hero_mode && color < 16) { fp_color = color; fp_px = px; fp_py = py; fp_fast(); return; }
+  fill_polygon_c(color, zoom, px, py);
+}
+void fill_polygon_c(uint8_t color, uint16_t zoom, int16_t px, int16_t py) {
+  if (bbm) {
+    int16_t w = SCL(pfetch(), zoom) >> 1, h = SCL(pfetch(), zoom) >> 1;
+    if (px - w < bb_x1) bb_x1 = px - w;
+    if (px + w > bb_x2) bb_x2 = px + w;
+    if (py - h < bb_y1) bb_y1 = py - h;
+    if (py + h > bb_y2) bb_y2 = py + h;
+    (void)color; return;
+  }
+  if (hero_mode) { if (color == 0) color = 14; else if (color == 14 || color >= 16) { hero_bad = 1; return; } }
   if (color == 0x11 && buf[0] != 0) { if (pending(0)) bg_force(0); materialize(0); }
   uint16_t bbw = SCL(pfetch(), zoom), bbh = SCL(pfetch(), zoom);
   int16_t x1 = px - bbw / 2, x2 = px + bbw / 2, y1 = py - bbh / 2, y2 = py + bbh / 2;
@@ -1004,6 +1527,7 @@ void fill_polygon(uint8_t color, uint16_t zoom, int16_t px, int16_t py) {
   if (x1 > 319 || x2 < 0 || y1 > 199 || y2 < 0) return;
   n = pfetch();
   if ((n & 1) || n > 70) return;
+  if (n == 4 && bbw == 0 && bbh <= 1) { plot(px, py, color); return; }   /* single point: no vertices needed */
   {
     uint8_t *raw = (uint8_t *)vy, k = n * 2, part;          /* raw vertex bytes staged in vy[] */
     uint16_t o = poly_off;
@@ -1044,30 +1568,41 @@ void fill_polygon(uint8_t color, uint16_t zoom, int16_t px, int16_t py) {
     }
   }
 converted:
+  if (g_oy) { for (i = 0; i < n; i++) { vy[i] -= g_oy; if (vy[i] < 0 || vy[i] >= (int16_t)clip_h) { hero_bad = 1; } } if (hero_bad) return; }
+#ifdef STATS
+  if (hero_mode) st_hpoly++; else st_opoly++;
+#endif
   if (n == 4 && bbw == 0 && bbh <= 1) plot(px, py, color);
   else draw_polygon(color, n);
 }
+/* 1991 DOS renderer bitmap masks: one run per row (precomputed), rasterised through the polygon band path */
 void draw_sprite_mask(uint8_t num, int16_t x, int16_t y, uint8_t color) {
-  uint16_t off; uint8_t w, h, j, i, b, words, run0 = 0, inrun; uint16_t msk; int16_t ay, sy, last_sy = -1000;
+  if (bbm) { if (x - 32 < bb_x1) bb_x1 = x - 32; if (x + 32 > bb_x2) bb_x2 = x + 32; if (y - 32 < bb_y1) bb_y1 = y - 32; if (y + 32 > bb_y2) bb_y2 = y + 32; return; }
+  uint16_t off; uint8_t w, h, j, r0, r1; int16_t ay, sy, last_sy = -1000, a, b;
   if (num >= NMASKS) return;
+  if (hero_mode) { if (color == 0) color = 14; else if (color == 14 || color >= 16) { hero_bad = 1; return; } }
   off = mask_off[num];
   map_rom(MASK_BANK); w = *(const uint8_t *)(0x8000 + off); h = *(const uint8_t *)(0x8001 + off); off += 2;
-  x -= w / 2; y -= h / 2; words = w / 16 + 1;
-  for (j = 0; j < h; j++) {
-    ay = y + j; sy = ty_(ay);
-    if (sy == last_sy || ay < 0 || ay >= 200 || sy < 0 || sy >= H) { off += words * 2; continue; }  /* rows merging into one SMS line */
-    last_sy = sy; inrun = 0;
-    for (i = 0; i < words; i++) {
-      map_rom(MASK_BANK);
-      msk = (*(const uint8_t *)(0x8000 + off) << 8) | *(const uint8_t *)(0x8001 + off); off += 2;
-      for (b = 0; b < 16; b++, msk <<= 1) {
-        uint8_t bit = (msk & 0x8000) != 0, px = i * 16 + b;
-        if (bit && !inrun) { inrun = 1; run0 = px; }
-        else if (!bit && inrun) { inrun = 0; span(tx_(x + run0), tx_(x + px - 1), (uint8_t)sy, color); }
-      }
-    }
-    if (inrun) span(tx_(x + run0), tx_(x + words * 16 - 1), (uint8_t)sy, color);
+  x -= w / 2; y -= h / 2;
+  bcolor = color; bmask = 0; band_y0 = -1;
+#ifdef STATS
+  if (hero_mode) st_hmask++; else st_omask++;
+#endif
+  for (j = 0; j < h; j++, off += 2) {
+    ay = y + j; sy = ty_(ay) - g_oy;
+    map_rom(MASK_BANK); r0 = *(const uint8_t *)(0x8000 + off); r1 = *(const uint8_t *)(0x8001 + off);
+    if (r0 == 0xFF) continue;
+    if (hero_mode && (sy < 0 || sy >= (int16_t)clip_h)) { hero_bad = 1; break; }
+    if (sy == last_sy || ay < 0 || ay >= 200 || sy < 0 || sy >= (int16_t)clip_h) continue;   /* rows merging into one SMS line */
+    last_sy = sy;
+    a = tx_(x + r0); b = tx_(x + r1);
+    if (b < 0 || a >= W) continue;
+    if (a < 0) a = 0;
+    if (b >= W) b = W - 1;
+    if ((int16_t)(sy & 0xF8) != band_y0) { band_flush(); band_y0 = sy & 0xF8; }
+    bxa[sy & 7] = (uint8_t)a; bxb[sy & 7] = (uint8_t)b; bmask |= bittab[sy & 7];
   }
+  band_flush();
 }
 void draw_shape(uint8_t color, uint16_t zoom, int16_t px, int16_t py);
 void draw_shape_parts(uint16_t zoom, int16_t x, int16_t y) {
@@ -1100,13 +1635,14 @@ void draw_shape(uint8_t color, uint16_t zoom, int16_t px, int16_t py) {
 
 /* ------------------------------------------------------------------ strings */
 void draw_string(uint8_t color, uint16_t x, uint16_t y, uint16_t id) {
+  if (hero_mode) { hero_bad = 1; return; }
   uint8_t k; const char *s = 0; uint16_t xx = x;
   for (k = 0; k < NSTRINGS; k++) if (str_id[k] == id) s = str_txt[k];
   if (!s) return;
   for (; *s; s++) {
     if (*s == '\n' || *s == '\r') { y += 8; x = xx; continue; }
     if (x * 8 <= 320 - 8 && y <= 200 - 8) {
-      int16_t X = tx_(x * 8), Y = ty_(y); uint8_t r, b; const uint8_t *g = font8 + (uint8_t)(*s - 0x20) * 8;
+      int16_t X = tx_(x * 8), Y = ty_(y); uint8_t r, b; uint8_t gl[8]; const uint8_t *g = gl; map_rom(CONST_BANK); memcpy(gl, FONT8 + (uint8_t)(*s - 0x20) * 8, 8);
       for (r = 0; r < 8; r++) for (b = 0; b < 8; b++)
         if (g[r] & (0x80 >> b)) { int16_t px = X + b, py = Y + r; if (px < W && py < H) span(px, px, (uint8_t)py, color); }
     }
@@ -1115,39 +1651,374 @@ void draw_string(uint8_t color, uint16_t x, uint16_t y, uint16_t id) {
 }
 
 /* ------------------------------------------------------------------ display */
-static const uint8_t solid_tiles[16][32] = {
-#define S4(c) (((c)&1)?0xFF:0),(((c)&2)?0xFF:0),(((c)&4)?0xFF:0),(((c)&8)?0xFF:0)
-#define ST(c) {S4(c),S4(c),S4(c),S4(c),S4(c),S4(c),S4(c),S4(c)}
-  ST(0),ST(1),ST(2),ST(3),ST(4),ST(5),ST(6),ST(7),ST(8),ST(9),ST(10),ST(11),ST(12),ST(13),ST(14),ST(15)
-};
 /* 32 bytes from src to VRAM: unpaced if the V-counter says VBlank has >= 20 lines left, else 28-cycle pacing */
 uint16_t ut_addr; const uint8_t *ut_src;
 /* scan page cells against what VRAM holds; stop at the first difference (fd_n = 0 when none) */
-uint16_t *fd_pp, *fd_sc, fd_n, fd_key;
-void find_diff(void) __naked {
+uint16_t *fd_pp, *fd_sc, fd_n, fd_key, *dr_base;
+/* show the hero canvas of page pg as 8x8 sprites (one per non-empty tile), following the shake offset */
+void spr_upload(uint8_t pg) {
+  uint8_t r, c, k = 0, b; uint16_t t, va; uint8_t y0 = (uint8_t)(24 - 1 + pscroll[pg]);
+  for (r = 0; r < 5; r++) for (c = 0; c < CW; c++) {
+    t = hcan[(uint16_t)r * CW + c];
+    if (!t || k == 14) continue;
+    load_tile(t, tbuf);
+    va = 0x2000 + ((uint16_t)spr_tiles[k] << 5);
+    __asm di __endasm;
+    VDPC = (uint8_t)va; VDPC = (uint8_t)(va >> 8) | 0x40;
+    for (b = 0; b < 32; b++) VDPD = tbuf[b];
+    VDPC = k; VDPC = 0x7F; VDPD = (uint8_t)(y0 + ((hero_cy0 + r) << 3));
+    VDPC = 0x80 + (k << 1); VDPC = 0x7F; VDPD = 24 + (c << 3); VDPD = spr_tiles[k];
+    __asm ei __endasm;
+    k++;
+  }
+  __asm di __endasm; VDPC = k; VDPC = 0x7F; VDPD = 0xD0; __asm ei __endasm;
+}
+void spr_hide(void) { __asm di __endasm; VDPC = 0; VDPC = 0x7F; VDPD = 0xD0; __asm ei __endasm; }
+/* upload the tile referenced by *fd_pp to its VRAM slot and record fd_key in *fd_sc (scr in cartridge RAM half 1) */
+void disp_upload(void) __naked {
   __asm
+    di                     ; the VBlank handler reads VDP status (resets the address latch) and may write VRAM
     ld hl,(_fd_pp)
-    ld de,(_fd_sc)
-    ld bc,(_fd_n)
-00001$:
-    ld a,b
-    or c
-    jr z,00090$
-    push bc
-    ld c,(hl)
+    ld de,(_dr_base)
+    or a
+    sbc hl,de
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld a,h
+    or #0x40
+    ld c,#0xBF
+    out (c),l
+    out (c),a
+    ld hl,(_fd_pp)
+    ld e,(hl)
     inc hl
-    ld b,(hl)
-    dec hl
-    ld a,b
+    ld d,(hl)
+    ld a,d
     cp #4
     jr nc,00010$
     or a
     jr nz,00020$
+    ld a,e
+    cp #16
+    jr nc,00020$
+    ld l,e
+    ld h,#0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,#_solid_tiles
+    add hl,de
+    jr 00030$
+00010$:
+    ld a,d
+    sub #4
+    ld d,a
+    srl a
+    add a,#BGT_BANK0
+    ld (_slot2),a
+    ld b,a
+    xor a
+    ld (#0xFFFC),a
+    ld a,b
+    ld (#0xFFFF),a
+    ld a,d
+    and #1
+    ld h,a
+    ld l,e
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    set 7,h
+    jr 00030$
+00020$:
+    ld a,d
+    srl a
+    ld b,a
+    or #0xFE
+    ld (_slot2),a
+    ld a,b
+    rlca
+    rlca
+    or #0x08
+    ld (#0xFFFC),a
+    ld a,d
+    and #1
+    ld h,a
+    ld l,e
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    set 7,h
+00030$:
+    ld c,#0xBE
+    in a,(#0x7E)
+    cp #0xC1
+    jp c,00040$
+    cp #0xEC
+    jp nc,00040$
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    outi
+    jp 00050$
+00040$:
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+    outi
+    nop
+    nop
+    nop
+00050$:
+    ld a,#0xFF
+    ld (_slot2),a          ; slot2 first: an interrupt restores whatever slot2 says
+    ld a,#0x0C
+    ld (#0xFFFC),a
+    ld hl,(_fd_sc)
+    ld de,(_fd_key)
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ei
+    ret
+  __endasm;
+}
+void find_diff(void) __naked {
+  __asm
+    ld hl,(_fd_pp)
+    ld de,(_fd_sc)
+    ld a,(_fd_n)
+    or a
+    jr z,00090$
+    ld b,a
+00001$:
+    ld a,(de)
+    cp (hl)
+    jr nz,00030$
+    inc hl
+    inc de
+    ld a,(de)
+    cp (hl)
+    jr nz,00020$
+00005$:
+    inc hl
+    inc de
+    djnz 00001$
+00090$:
+    xor a
+    ld (_fd_n),a
+    ld (_fd_n+1),a
+    ret
+00020$:
+    ld a,(hl)
+    cp #4
+    jr nc,00031$
+    ld c,a
+    or a
+    jr nz,00021$
+    dec hl
+    ld a,(hl)
+    inc hl
+    cp #16
+    jr c,00031$
+00021$:
+    push hl
+    push de
+    dec hl
+    ld e,(hl)
+    ld d,c
+    ld hl,#_rcg
+    add hl,de
+    ld a,(hl)
+    and #0xF8
+    rrca
+    or c
+    or #0x80
+    pop de
+    pop hl
+    ld c,a
+    ld a,(de)
+    cp c
+    jr z,00005$
+00031$:
+    dec hl
+    dec de
+00030$:
+    ld a,b
+    ld (_fd_n),a
+    xor a
+    ld (_fd_n+1),a
+    ld (_fd_pp),hl
+    ld (_fd_sc),de
+    ld c,(hl)
+    inc hl
+    ld b,(hl)
+    ld a,b
+    cp #4
+    jr nc,00040$
+    or a
+    jr nz,00035$
     ld a,c
     cp #16
-    jr c,00010$
-00020$:
-    push hl
+    jr c,00040$
+00035$:
     ld hl,#_rcg
     add hl,bc
     ld a,(hl)
@@ -1156,63 +2027,17 @@ void find_diff(void) __naked {
     or b
     or #0x80
     ld b,a
-    pop hl
-00010$:
-    ld a,(de)
-    cp c
-    jr nz,00030$
-    inc de
-    ld a,(de)
-    dec de
-    cp b
-    jr nz,00030$
-    pop bc
-    dec bc
-    inc hl
-    inc hl
-    inc de
-    inc de
-    jr 00001$
-00030$:
+00040$:
     ld (_fd_key),bc
-    pop bc
-    ld (_fd_n),bc
-    ld (_fd_pp),hl
-    ld (_fd_sc),de
-    ret
-00090$:
-    ld (_fd_n),bc
     ret
   __endasm;
 }
-void upload_direct(void) __naked {
-  __asm
-    ld hl,(_ut_addr)
-    ld c,#0xBF
-    out (c),l
-    out (c),h
-    ld hl,(_ut_src)
-    ld c,#0xBE
-    in a,(#0x7E)
-    cp #0xC1
-    jr c,00020$
-    cp #0xEC
-    jr nc,00020$
-    .rept 32
-    outi
-    .endm
-    ret
-00020$:
-    .rept 32
-    outi
-    nop
-    nop
-    nop
-    .endm
-    ret
-  __endasm;
-}
+
 void set_vram(uint16_t a) { VDPC = a & 0xFF; VDPC = (a >> 8) | 0x40; }
+#ifndef MAXSKIP
+#define MAXSKIP 1          /* at most this many pictures dropped in a row */
+#endif
+uint8_t skip_run; uint16_t frames_skipped, sched;
 void display(uint8_t p) {
   uint16_t c, key, t; uint16_t *pp;
   uint8_t i;
@@ -1222,22 +2047,43 @@ void display(uint8_t p) {
   }
   /* original pacing: VAR(0xFF) slices of 20 ms (1.2 ticks each) since the last display */
   if (vars[0x2A] == 6) { ending_hit = 1; paused = 1; return; }   /* hand over before showing the first ending frame */
+#ifndef NOFRAMESKIP
+  /* busy scenes: each game frame advances a schedule by its original duration (VAR 0xFF x 20 ms). When the real
+     clock is already a frame behind, this frame's picture is dropped (never two in a row, never with a pending
+     palette); its queued draws are discarded when the page is next overwritten. */
+  { uint16_t due = ((uint16_t)vars[0xFF] * 6 + 4) / 5;
+    sched += due;
+    if (!ff && game_frames && next_pal == 0xFF && skip_run < MAXSKIP && due && (int16_t)(ticks - sched) >= (int16_t)due) {
+      skip_run++; frames_skipped++; game_frames++; return;
+    }
+    skip_run = 0;
+    if ((int16_t)(ticks - sched) > (int16_t)(due << 2)) sched = ticks;      /* far behind: do not try to catch up */
+  }
+#endif
   bg_use(buf[1]);
-  if (ff) { ff--; if (next_pal != 0xFF) { cur_pal = next_pal; next_pal = 0xFF; } if (!ff) last_disp = ticks; return; }
+  if (ff) { ff--; if (next_pal != 0xFF) { cur_pal = next_pal; next_pal = 0xFF; } if (!ff) last_disp = sched = ticks; return; }
   if (next_pal == 0xFF && cur_pal != 0xFF && game_frames == 0) next_pal = cur_pal;
+#ifdef NOFRAMESKIP
   while ((uint16_t)(ticks - last_disp) * 5 < (uint16_t)vars[0xFF] * 6) ;
+#else
+  while ((int16_t)(ticks - sched) < 0) ;
+#endif
   if (next_pal != 0xFF) SMS_waitForVBlank();   /* colour RAM is only written in VBlank */
   last_disp = ticks;
   if (next_pal != 0xFF) {
-    if (next_pal < 32) { VDPC = 0; VDPC = 0xC0; for (i = 0; i < 16; i++) VDPD = pal_sms[next_pal][i]; cur_pal = next_pal; }
+    if (next_pal < 32) { map_rom(CONST_BANK); __asm di __endasm; VDPC = 0; VDPC = 0xC0; for (i = 0; i < 16; i++) VDPD = PAL_SMS[(uint16_t)next_pal * 16 + i];
+      VDPD = 0;                                               /* sprite colour 0: transparent, and the border (black) */
+      for (i = 1; i < 16; i++) VDPD = (i == 14) ? PAL_SMS[(uint16_t)next_pal * 16 + 0] : PAL_SMS[(uint16_t)next_pal * 16 + i];   /* sprite palette: hero colour 0 -> 14 */
+      cur_pal = next_pal; __asm ei __endasm; }
     next_pal = 0xFF;
   }
   materialize(buf[1]);
   { uint8_t v = (uint8_t)(-pscroll[buf[1]]); if (pscroll[buf[1]] > 0) v = (uint8_t)(224 - pscroll[buf[1]]);
-    if (v != vscroll_cur) { vscroll_cur = v; vreg(9, v); } }
+    if (v != vscroll_cur) { vscroll_cur = v; __asm di __endasm; vreg(9, v); __asm ei __endasm; } }
   {
     uint8_t pg = buf[1], r;
     if (++dispcount == 0) { memset(rowstamp, 0, sizeof(rowstamp)); memset(lastdisp, 0, sizeof(lastdisp)); memset(drow, 1, sizeof(drow)); dispcount = 1; }
+    dr_base = page[pg];
     for (r = 0; r < 17; r++) {
       if (!drow[pg][r] && rowstamp[r] <= lastdisp[pg]) continue;     /* screen row already equals this page */
       drow[pg][r] = 0;
@@ -1246,23 +2092,33 @@ void display(uint8_t p) {
         map_sram(SCR_TILE >> 9);
         find_diff();
         if (!fd_n) break;
-        t = *fd_pp;
-        ut_addr = 0x4000 | ((uint16_t)(r * CW + CW - fd_n) << 5);
-        if (t < 16) ut_src = solid_tiles[t];
-        else if (t >= 1024) { uint16_t q = t - 1024; map_rom(BGT_BANK0 + (q >> 9)); ut_src = (const uint8_t *)(0x8000 + ((q & 511) << 5)); }
-        else { map_sram(t >> 9); ut_src = TADDR(t); }
-        upload_direct();
-        map_sram(SCR_TILE >> 9);
-        *fd_sc = fd_key;
+        disp_upload();
         rowstamp[r] = dispcount;
         fd_pp++; fd_sc++; fd_n--;
       }
     }
     lastdisp[pg] = dispcount;
+    if (hero_pages & (1 << pg)) {
+      if (!spr_on || spr_gen != hero_gen || spr_scroll != pscroll[pg]) { spr_upload(pg); spr_on = 1; spr_gen = hero_gen; spr_scroll = pscroll[pg]; }
+    } else if (spr_on) { spr_hide(); spr_on = 0; }
+#ifdef VRAMCHECK
+    { uint16_t c; uint8_t b, ref[32]; uint16_t *pc = page[pg];
+      for (c = 0; c < NCELL; c++) {
+        uint16_t t = pc[c]; uint16_t va = (uint16_t)c << 5;
+        load_tile(t, ref);
+        __asm di __endasm;
+        VDPC = (uint8_t)va; VDPC = (uint8_t)(va >> 8) & 0x3F;
+        for (b = 0; b < 32; b++) { uint8_t v = VDPD; if (v != ref[b]) { if (!vram_bad) { vb_cell = c; vb_frame = game_frames; vb_t = t; vb_byte = b; } vram_bad++; break; } }
+        __asm ei __endasm;
+      }
+      map_sram(SCR_TILE >> 9);
+    }
+#endif
 #ifdef DIFFCHECK
-    fd_pp = page[pg]; fd_sc = scr; fd_n = NCELL;
-    map_sram(SCR_TILE >> 9); find_diff();
-    if (fd_n) { diff_missed++; diff_cell = NCELL - fd_n; }
+    { uint8_t rr; for (rr = 0; rr < 17; rr++) {
+      fd_pp = page[pg] + (uint16_t)rr * CW; fd_sc = scr + (uint16_t)rr * CW; fd_n = CW;
+      map_sram(SCR_TILE >> 9); find_diff();
+      if (fd_n) { diff_missed++; diff_cell = rr * CW + CW - fd_n; } } }
 #endif
   }
   game_frames++;
@@ -1272,17 +2128,7 @@ void display(uint8_t p) {
 static uint8_t sv_bank[4], sv_att[4], sv_on[4];
 static const uint16_t *sv_ptr[4];
 static uint16_t psg_last[4];      /* per PSG channel: period/mode | att << 12 */
-void psg_write(uint8_t ch, uint16_t per, uint8_t att) {
-  uint8_t *l = (uint8_t *)&psg_last[ch];
-  uint8_t lo = (uint8_t)per, hi = ((uint8_t)(per >> 8) & 3) | (uint8_t)(att << 4);
-  uint8_t ol = l[0], oh = l[1];
-  if (ol == lo && oh == hi) return;
-  if (ch < 3) {
-    if (ol != lo || ((oh ^ hi) & 3)) { PSGP = 0x80 | (ch << 5) | (lo & 15); PSGP = ((lo >> 4) | (uint8_t)(hi << 4)) & 0x3F; }
-  } else if ((ol ^ lo) & 3) PSGP = 0xE4 | (lo & 3);
-  if ((oh ^ hi) & 0xF0) PSGP = 0x90 | (ch << 5) | att;
-  l[0] = lo; l[1] = hi;
-}
+
 static uint8_t snd_quiet;
 void snd_tick_(void);
 void snd_tick(void) { T0(4); snd_tick_(); T1(4); }
@@ -1599,9 +2445,10 @@ void play_sound(uint16_t res, uint8_t freq, uint8_t vol, uint8_t ch) {
   if (vol == 0) { sv_on[ch] = 0; return; }
   if (vol > 63) vol = 63;
   if (freq > 39) freq = 39;
-  for (k = 0; k < NSFX; k++) if (sfx_tab[k][0] == res && sfx_tab[k][1] == freq) {
+  map_rom(CONST_BANK);
+  for (k = 0; k < NSFX; k++) if (SFX_TAB[k * 5 + 0] == res && SFX_TAB[k * 5 + 1] == freq) {
     __asm di __endasm;
-    sv_bank[ch] = sfx_tab[k][2]; sv_ptr[ch] = (const uint16_t *)(sfx_tab[k][3] | (sfx_tab[k][4] << 8));
+    sv_bank[ch] = SFX_TAB[k * 5 + 2]; sv_ptr[ch] = (const uint16_t *)(SFX_TAB[k * 5 + 3] | (SFX_TAB[k * 5 + 4] << 8));
     sv_att[ch] = volatt[vol]; sv_on[ch] = 1;
     __asm ei __endasm;
     return;
@@ -1614,7 +2461,7 @@ void isr(void) { ticks++; snd_tick(); }
    offline capture (rawgl/bgcap.inc). Draws are deferred; when a page is used (copied from or displayed)
    the longest prefix of its pending draws whose resulting state was pre-rendered is loaded as ROM tile
    references, and only the remaining draws are rasterised. */
-#define NDEF 32
+#define NDEF 28
 typedef struct { uint8_t pg, ks; uint16_t off; int16_t x, y; uint16_t zoom; uint32_t key; } defent; /* ks: 0x81/0x82 shape seg, 0x40 string */
 static defent dl[NDEF];
 static uint8_t ndl;
@@ -1665,10 +2512,15 @@ void bgw(uint8_t p, uint16_t w) { bgb(p, w >> 8); bgb(p, w & 255); }
 uint8_t pending(uint8_t p) { uint8_t k; for (k = 0; k < ndl; k++) if (dl[k].pg == p) return 1; return 0; }
 /* binary search of the key table: returns 1 and fills *bank/*addr on a hit */
 uint8_t bg_lookup(uint32_t key, uint8_t *bank, uint16_t *addr) {
-  int16_t lo = 0, hi = NBG - 1;
+  int16_t lo, hi; uint8_t kb, nb, i;
   uint16_t fi = ((uint16_t)(key >> 16) ^ (uint16_t)key) & 0x3FFF;
-  map_rom(BGK_BANK);
-  if (!(*(const uint8_t *)(0xB800 + (fi >> 3)) & bittab[fi & 7])) return 0;   /* key filter */
+  const uint8_t *f;
+  map_rom(BGF_BANK);
+  if (!(*(const uint8_t *)(0x8000 + (fi >> 3)) & bittab[fi & 7])) return 0;     /* key filter */
+  f = (const uint8_t *)0x8800; nb = f[0]; f++;
+  for (kb = 0, i = 1; i < nb; i++) if (*(const uint32_t *)(f + i * 6 + 2) <= key) kb = i;   /* key bank by first key */
+  hi = *(const uint16_t *)(f + kb * 6) - 1; lo = 0;
+  map_rom(BGK_BANK + kb);
   while (lo <= hi) {
     int16_t mid = (lo + hi) >> 1; uint16_t m6 = ((uint16_t)mid << 2) + ((uint16_t)mid << 1);
     const uint8_t *e = (const uint8_t *)(0x8000 + m6);
@@ -1678,6 +2530,98 @@ uint8_t bg_lookup(uint32_t key, uint8_t *bank, uint16_t *addr) {
   }
   return 0;
 }
+uint16_t bgl_rows[17], *bgl_dst, *bgl_pid; uint8_t *bgl_drow, bgl_i;
+void bgl_do(void) __naked {
+  __asm
+    xor a
+    ld (_bgl_i),a
+00001$:
+    ld a,(_bgl_i)
+    add a,a
+    ld e,a
+    ld d,#0
+    ld hl,#_bgl_rows
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld a,(_bgl_i)
+    add a,a
+    ld c,a
+    ld b,#0
+    ld hl,(_bgl_pid)
+    add hl,bc
+    ld a,(hl)
+    cp e
+    jr nz,00005$
+    inc hl
+    ld a,(hl)
+    cp d
+    jr nz,00006$
+    ld hl,(_bgl_dst)
+    ld bc,#52
+    add hl,bc
+    ld (_bgl_dst),hl
+    jp 00002$
+00006$:
+    dec hl
+00005$:
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ld a,d
+    add a,#BGR_BANK0
+    ld (_slot2),a
+    ld b,a
+    xor a
+    ld (#0xFFFC),a
+    ld a,b
+    ld (#0xFFFF),a
+    ld l,e
+    ld h,#0
+    add hl,hl
+    add hl,hl
+    push hl
+    add hl,hl
+    add hl,hl
+    push hl
+    add hl,hl
+    pop de
+    add hl,de
+    pop de
+    add hl,de
+    set 7,h
+    ld (_cp_sp),hl
+    ld hl,(_bgl_dst)
+    ld (_cp_dp),hl
+    ld de,#52
+    add hl,de
+    ld (_bgl_dst),hl
+    ld a,#26
+    ld (_cp_n),a
+    xor a
+    ld (_cpr_chg),a
+    call _cpr_loop
+    ld a,(_cpr_chg)
+    or a
+    jr z,00002$
+    ld hl,(_bgl_drow)
+    ld a,(_bgl_i)
+    add a,l
+    ld l,a
+    jr nc,00003$
+    inc h
+00003$:
+    ld (hl),#1
+00002$:
+    ld a,(_bgl_i)
+    inc a
+    ld (_bgl_i),a
+    cp #17
+    jp nz,00001$
+    ret
+  __endasm;
+}
 /* load cached state mi into page p row by row (maps -> row pool), flagging rows that changed */
 void bg_load(uint8_t bank, uint16_t mi, uint8_t p) {
   uint8_t r; uint16_t rows[17], rid, lo8;
@@ -1685,32 +2629,193 @@ void bg_load(uint8_t bank, uint16_t mi, uint8_t p) {
   pgen[p]++; pbase[p] = 0xFF; pscroll[p] = 0;
   lo8 = mi & 255;
   map_rom(BGM_BANK0 + (mi >> 8));
-  memcpy(rows, (const uint8_t *)(0x8000 + (lo8 << 5) + (lo8 << 1)), 34);
-  for (r = 0; r < 17; r++) {
-    rid = rows[r]; lo8 = rid & 255;
-    map_rom(BGR_BANK0 + (rid >> 8));
-    cp_sp = (uint16_t *)(0x8000 + (lo8 << 5) + (lo8 << 4) + (lo8 << 2));
-    cp_dp = page[p] + (uint16_t)r * CW; cp_n = CW; cpr_chg = 0; cpr_loop();
-    if (cpr_chg) drow[p][r] = 1;
-  }
+  memcpy(bgl_rows, (const uint8_t *)(0x8000 + (lo8 << 5) + (lo8 << 1)), 34);
+  (void)r; (void)rows; (void)rid;
+  bgl_dst = page[p]; bgl_drow = drow[p]; bgl_pid = prowid[p]; bgl_do();
 }
 void render_ent(defent *e) {
   uint8_t save = buf[0];
   buf[0] = e->pg;
-  if (e->ks & 0x80) { poly_bank0 = (e->ks == 0x82) ? V2_BANK : V1_BANK; poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); }
+  if (e->ks & 0x80) { poly_bank0 = ((e->ks & 0x0F) == 2) ? V2_BANK : V1_BANK; poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); }
   else draw_string((uint8_t)e->zoom, e->x, e->y, e->off);
   buf[0] = save;
 }
+defent hero_e[2];
+/* relative box of shape (seg, off) at zoom 64 from the offline table (mkbbox.py); 1 = found */
+int16_t tb[4];
+uint8_t bl_seg; uint16_t bl_off; int16_t bl_lo, bl_hi;
+/* binary search of (bl_seg, bl_off) in the 12-byte entries of BBOX_TAB; A = 1 and tb[] filled when found */
+uint8_t bbox_find(void) __naked {
+  __asm
+    ld a,#CONST_BANK
+    ld (_slot2),a
+    xor a
+    ld (#0xFFFC),a
+    ld a,#CONST_BANK
+    ld (#0xFFFF),a
+    ld hl,#0
+    ld (_bl_lo),hl
+    ld hl,#NBBOX-1
+    ld (_bl_hi),hl
+00001$:
+    ld hl,(_bl_hi)
+    ld de,(_bl_lo)
+    or a
+    sbc hl,de
+    jp m,00090$
+    ld hl,(_bl_lo)
+    add hl,de
+    ld hl,(_bl_lo)
+    ld de,(_bl_hi)
+    add hl,de
+    srl h
+    rr l
+    push hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    add hl,hl
+    ld de,#BBOX_TAB_ADDR
+    add hl,de
+    inc hl
+    inc hl
+    ld a,(_bl_seg)
+    cp (hl)
+    jr nz,00010$
+    dec hl
+    ld a,(_bl_off+1)
+    cp (hl)
+    jr nz,00011$
+    dec hl
+    ld a,(_bl_off)
+    cp (hl)
+    jr nz,00012$
+    pop de
+    ld de,#4
+    add hl,de
+    ld de,#_tb
+    ld bc,#8
+    ldir
+    ld a,#1
+    ret
+00011$:
+    inc hl
+    jr 00010$
+00012$:
+    inc hl
+    inc hl
+00010$:
+    pop hl
+    jr c,00020$
+    inc hl
+    ld (_bl_lo),hl
+    jp 00001$
+00020$:
+    dec hl
+    ld (_bl_hi),hl
+    jp 00001$
+00090$:
+    xor a
+    ret
+  __endasm;
+}
+uint8_t bbox_lookup(uint8_t seg, uint16_t off) { bl_seg = seg; bl_off = off; return bbox_find(); }
+#ifdef BBCHECK
+uint16_t bb_bad, bb_hit, bb_miss;
+#endif
+void ent_bbox_walk(defent *e);
+void ent_bbox(defent *e) {
+  if ((e->ks & 0x80) && e->zoom == 64 && bbox_lookup(e->ks & 0x0F, e->off)) {
+    int16_t a1, b1, a2, b2;
+    if (tb[0] > tb[2]) { a1 = b1 = 32000; a2 = b2 = -32000; }
+    else { a1 = e->x + tb[0]; b1 = e->y + tb[1]; a2 = e->x + tb[2]; b2 = e->y + tb[3]; }
+#ifdef BBCHECK
+    bb_hit++;
+    ent_bbox_walk(e);
+    if (bb_x1 != a1 || bb_y1 != b1 || bb_x2 != a2 || bb_y2 != b2) bb_bad++;
+#endif
+    bb_x1 = a1; bb_y1 = b1; bb_x2 = a2; bb_y2 = b2;
+    return;
+  }
+#ifdef BBCHECK
+  bb_miss++;
+#endif
+  ent_bbox_walk(e);
+}
+void ent_bbox_walk(defent *e) {
+  if (!(e->ks & 0x80)) { bb_x1 = bb_y1 = -32000; bb_x2 = bb_y2 = 32000; return; }
+  bb_x1 = bb_y1 = 32000; bb_x2 = bb_y2 = -32000;
+  bbm = 1; poly_bank0 = ((e->ks & 0x0F) == 2) ? V2_BANK : V1_BANK; poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); bbm = 0;
+}
+uint8_t hero_valid;
+void hero_clear(void) { uint16_t c; hero_valid = 0; for (c = 0; c < 5 * CW; c++) { unref(hcan[c]); hcan[c] = 0; } }
+void hero_draw(defent *e) { poly_bank0 = ((e->ks & 0x0F) == 2) ? V2_BANK : V1_BANK; poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); }
+/* draw Lester (the trailing hero draws of page p) into the sprite canvas; 0 = does not fit, draw him normally */
+uint8_t hero_render(uint8_t p, uint8_t *ids, uint8_t cnt) {
+  uint8_t j, save = buf[0], tiles = 0, cy1, cy0; int16_t sy; uint16_t c;
+#ifdef NOSPRITES
+  return 0;
+#endif
+  if (hero_valid && cnt == hero_ne) {                         /* same draws as the canvas in place: reuse it */
+    for (j = 0; j < cnt; j++) { defent *a = &dl[ids[j]], *b = &hero_e[j];
+      if (a->ks != b->ks || a->off != b->off || a->x != b->x || a->y != b->y || a->zoom != b->zoom) break; }
+    if (j == cnt) { hero_pages = 1 << p; return 1; }
+  }
+  sy = ty_(dl[ids[0]].y);
+  if (sy < 8 || sy >= H) return 0;
+  (void)cy1;
+  cy0 = sy >= 32 ? (uint8_t)((sy - 32) >> 3) : 0;          /* rows cy0..cy0+4 always cover the 32 lines above his feet */
+  if (cy0 > 12) cy0 = 12;
+  hero_clear();
+  buf[0] = 4; g_oy = (int16_t)cy0 << 3; clip_h = 40; hero_mode = 1; hero_bad = 0;
+  for (j = 0; j < cnt && !hero_bad; j++) hero_draw(&dl[ids[j]]);
+  buf[0] = save; g_oy = 0; clip_h = H; hero_mode = 0;
+  for (c = 0; c < 5 * CW; c++) if (hcan[c]) tiles++;
+  if (hero_bad || tiles > 14 || !tiles) { hero_clear(); return 0; }
+  hero_cy0 = cy0; hero_ne = cnt;
+  for (j = 0; j < cnt; j++) hero_e[j] = dl[ids[j]];
+  hero_pages = 1 << p; hero_gen++; hero_valid = 1;
+  return 1;
+}
+/* non-hero draws are about to land on page p after Lester was drawn as sprites: put him into the page first */
+void hero_bake(uint8_t p) {
+  uint8_t j, save = buf[0];
+  buf[0] = p;
+  for (j = 0; j < hero_ne; j++) hero_draw(&hero_e[j]);
+  buf[0] = save; hero_pages &= ~(1 << p);
+}
 /* materialise page p: load the longest cached prefix, rasterise the rest */
 void bg_flush(uint8_t p) {
-  uint8_t k, n = 0, idx[NDEF], j, bank, sb = poly_bank0; int8_t hit = -1; uint16_t addr, so = poly_off;
+  uint8_t k, n = 0, idx[NDEF], hid[2], nh = 0, j, lim, bank, sb = poly_bank0, overlap = 0;
+  int8_t hit = -1, hf = -1; uint16_t addr, so = poly_off; int16_t hx1, hy1, hx2, hy2;
   for (k = 0; k < ndl; k++) if (dl[k].pg == p) idx[n++] = k;
   if (!n) return;
   src_changing(p);
-  for (j = n; j > 0; j--) if (bg_lookup(dl[idx[j - 1]].key, &bank, &addr)) { hit = j - 1; break; }
-  if (hit >= 0) { pend[p] = 0xFF; bg_load(bank, addr, p); bg_hits++; } else { materialize(p); bg_miss++; }
+  for (j = 0; j < n; j++) if ((dl[idx[j]].ks & 0xA0) == 0xA0) { if (hf < 0) hf = j; if (nh < 2) hid[nh] = idx[j]; nh++; }
+  if (nh > 2) overlap = 1;
+  else if (nh) {                           /* does anything drawn after Lester overlap him? */
+    ent_bbox(&dl[hid[0]]); hx1 = bb_x1; hy1 = bb_y1; hx2 = bb_x2; hy2 = bb_y2;
+    if (nh == 2) { ent_bbox(&dl[hid[1]]); if (bb_x1 < hx1) hx1 = bb_x1; if (bb_y1 < hy1) hy1 = bb_y1; if (bb_x2 > hx2) hx2 = bb_x2; if (bb_y2 > hy2) hy2 = bb_y2; }
+    for (j = hf + 1; j < n && !overlap; j++) {
+      defent *e = &dl[idx[j]];
+      if ((e->ks & 0xA0) == 0xA0) continue;
+      ent_bbox(e);
+      if (!(bb_x2 < hx1 || bb_x1 > hx2 || bb_y2 < hy1 || bb_y1 > hy2)) overlap = 1;
+    }
+  }
+  lim = (nh && overlap) ? (uint8_t)hf : n;  /* Lester drawn in order: only states from before him can be used */
+  for (j = lim; j > 0; j--) if (bg_lookup(dl[idx[j - 1]].key, &bank, &addr)) { hit = j - 1; break; }
+  if (hit >= 0) { pend[p] = 0xFF; bg_load(bank, addr, p); bg_hits++; hero_pages &= ~(1 << p); } else { materialize(p); bg_miss++; }
   if (hit + 1 < n) pscroll[p] = 0;       /* drawing into a shaken page: the shake is dropped for it */
-  for (j = hit + 1; j < n; j++) render_ent(&dl[idx[j]]);
+  if (!nh && (uint8_t)(hit + 1) < n && (hero_pages & (1 << p))) hero_bake(p);
+  if (nh && !overlap) {                     /* Lester on top of everything: hardware sprites */
+    for (j = hit + 1; j < n; j++) if ((dl[idx[j]].ks & 0xA0) != 0xA0) render_ent(&dl[idx[j]]);
+    if (!hero_render(p, hid, nh)) for (j = 0; j < nh; j++) render_ent(&dl[hid[j]]);
+  } else {
+    for (j = hit + 1; j < n; j++) render_ent(&dl[idx[j]]);
+  }
   for (j = 0, k = 0; k < ndl; k++) if (dl[k].pg != p) dl[j++] = dl[k];
   ndl = j; poly_bank0 = sb; poly_off = so;
 }
@@ -1720,6 +2825,8 @@ void bg_use(uint8_t p) { bg_flush(p); }
 void bg_add(uint8_t ks, uint16_t off, int16_t x, int16_t y, uint16_t zoom) {
   defent *e;
   if (ndl == NDEF) bg_flush(dl[0].pg);
+  if (bg_hero_next && (ks & 0x80)) ks |= 0x20;
+  bg_hero_next = 0;
   e = &dl[ndl++]; e->pg = buf[0]; e->ks = ks; e->off = off; e->x = x; e->y = y; e->zoom = zoom;
   e->key = ((uint32_t)bh[buf[0]] << 16) | blen[buf[0]];
 }
@@ -1782,6 +2889,7 @@ void bg_feed(void) __naked {
 }
 uint8_t bg_shape(uint8_t seg, uint16_t off, int16_t x, int16_t y, uint16_t zoom) {
   uint8_t p = buf[0];
+  if (bg_hero_next) { bg_add(0x80 | seg, off, x, y, zoom); return 1; }   /* Lester: queued, not hashed */
   bfe_buf[0] = 0xA0 | seg; bfe_buf[1] = (uint8_t)(off >> 8); bfe_buf[2] = (uint8_t)off;
   bfe_buf[3] = (uint8_t)((uint16_t)x >> 8); bfe_buf[4] = (uint8_t)x; bfe_buf[5] = (uint8_t)((uint16_t)y >> 8); bfe_buf[6] = (uint8_t)y;
   bfe_buf[7] = (uint8_t)(zoom >> 8); bfe_buf[8] = (uint8_t)zoom;
@@ -1848,8 +2956,9 @@ static uint16_t demo_pos;
 void update_input(void) {
 #ifdef DEMOPLAY
   { uint8_t dm = 0; int16_t lr = 0, ud = 0;
-    while (demo_pos + 1 < NDEMO && demo_in[demo_pos + 1][0] <= game_frames) demo_pos++;
-    if (demo_in[demo_pos][0] <= game_frames) dm = (uint8_t)demo_in[demo_pos][1];
+    map_rom(CONST_BANK);
+    while (demo_pos + 1 < NDEMO && DEMO_IN[(demo_pos + 1) * 2 + 0] <= game_frames) demo_pos++;
+    if (DEMO_IN[(demo_pos) * 2 + 0] <= game_frames) dm = (uint8_t)DEMO_IN[(demo_pos) * 2 + 1];
     if (dm & 1) lr = 1;
     if (dm & 2) lr = -1;
     if (dm & 4) ud = 1;
@@ -2396,15 +3505,17 @@ void exec_task(void) {
     } else if (op & 0x40) {
       uint16_t off; int16_t x, y; uint16_t zoom = 64;
       off = fetch() << 8; off = (off | fetch()) << 1;
+      uint8_t xv = 0, yv = 0;
       x = fetch();
       poly_bank0 = V1_BANK;
       if (!(op & 0x20)) {
-        if (!(op & 0x10)) x = (x << 8) | fetch(); else x = vars[x];
+        if (!(op & 0x10)) x = (x << 8) | fetch(); else { xv = (uint8_t)x; x = vars[x]; }
       } else if (op & 0x10) x += 0x100;
       y = fetch();
       if (!(op & 8)) {
-        if (!(op & 4)) y = (y << 8) | fetch(); else y = vars[y];
+        if (!(op & 4)) y = (y << 8) | fetch(); else { yv = (uint8_t)y; y = vars[y]; }
       }
+      bg_hero_next = (xv == 1 && yv == 2);        /* Lester: drawn at his position variables */
       if (!(op & 2)) { if (op & 1) zoom = vars[fetch()]; }
       else { if (op & 1) poly_bank0 = V2_BANK; else zoom = fetch(); }
       poly_off = off;
@@ -2453,7 +3564,7 @@ void exec_task(void) {
           if (sl != dl && vs >= -199 && vs <= 199) {
             bg_use(sl); bg_copy(sl, dl, 1, vs);
             int16_t dy = (int16_t)(((int32_t)vs * 17 - ((vs < 0) ? 24 : 0)) / 25);
-            if (dy >= -24 && dy <= 24) {                 /* screen shake: reference copy + hardware scroll */
+            if (dy >= -7 && dy <= 7) {                   /* screen shake: reference copy + hardware scroll */
               int8_t base = pscroll[sl];
               copy_page_refs(sl, dl); pscroll[dl] = base + (int8_t)dy;
             } else { pscroll[dl] = 0; copy_page_scroll(sl, dl, dy); }
@@ -2537,21 +3648,66 @@ void rt_sync(void) __naked {
     ret
   __endasm;
 }
+/* run every active task (state 0, pc != 0xFFFF) once, in task order */
+uint8_t rt_i;
+void exec_task(void);
+void rt_loop(void) __naked {
+  __asm
+    xor a
+    ld (_rt_i),a
+00001$:
+    ld a,(_rt_i)
+    ld e,a
+    ld d,#0
+    ld hl,#_tst
+    add hl,de
+    ld a,(hl)
+    or a
+    jr nz,00009$
+    ld hl,#_tpc
+    add hl,de
+    add hl,de
+    ld a,(hl)
+    inc hl
+    and (hl)
+    inc a
+    jr z,00009$
+    ld d,(hl)
+    dec hl
+    ld e,(hl)
+    ld (_pc),de
+    xor a
+    ld (_sp_),a
+    ld (_paused),a
+    call _exec_task
+    ld a,(_rt_i)
+    ld e,a
+    ld d,#0
+    ld hl,#_tpc
+    add hl,de
+    add hl,de
+    ld de,(_pc)
+    ld (hl),e
+    inc hl
+    ld (hl),d
+    ld a,(_ending_hit)
+    or a
+    ret nz
+00009$:
+    ld a,(_rt_i)
+    inc a
+    ld (_rt_i),a
+    cp #64
+    jr nz,00001$
+    ret
+  __endasm;
+}
 void run_tasks(void) {
   uint8_t i; uint16_t *p0; uint8_t *s0;
   rt_sync();
   if (ff) { vars[0xE5] = vars[0xFB] = vars[0xFC] = vars[0xFD] = vars[0xFA] = vars[0xFE] = 0; } else update_input();
-  for (i = 64, p0 = tpc[0], s0 = tst[0]; i; i--, p0++, s0++) {
-    if (*s0 == 0 && *p0 != 0xFFFF) {
-      pc = *p0; sp_ = 0; paused = 0;
-#ifdef CAPTURE_PC
-      if (pc == CAPTURE_PC) { capture_hit = 1; return; }
-#endif
-      exec_task();
-      *p0 = pc;
-      if (ending_hit) return;
-    }
-  }
+  (void)i; (void)p0; (void)s0;
+  rt_loop();
 }
 
 /* ------------------------------------------------------------------ setup */
@@ -2559,12 +3715,13 @@ void vreg(uint8_t r, uint8_t v) { VDPC = v; VDPC = 0x80 | r; }
 void video_setup(void) {
   uint16_t i; uint8_t cx, cy;
   vreg(1, 0x80);
-  vreg(0, 0x06); vreg(2, 0xFF); vreg(3, 0xFF); vreg(4, 0xFF); vreg(5, 0xFF); vreg(6, 0xFB);
+  vreg(0, 0x06); vreg(2, 0xFF); vreg(3, 0xFF); vreg(4, 0xFF); vreg(5, 0xFF); vreg(6, 0xFF);
   vreg(7, 0x00); vreg(8, 0); vreg(9, 0); vreg(10, 0xFF);
-  set_vram(0); for (i = 0; i < 0x3800; i++) VDPD = 0;
+  set_vram(0); for (i = 0; i < 0x4000; i++) VDPD = 0;
   set_vram(0x3800);
-  for (cy = 0; cy < 24; cy++) for (cx = 0; cx < 32; cx++) {
+  for (cy = 0; cy < 28; cy++) for (cx = 0; cx < 32; cx++) {
     uint16_t e = 0x800 | NT_BLANK;
+    if (cy == 25 || cy == 26) { VDPD = 0; VDPD = 0; continue; }     /* rows 25-26 hold sprite tiles */
     if (cx >= 3 && cx < 3 + CW && cy >= 3 && cy < 20) e = (cy - 3) * CW + (cx - 3);
     VDPD = e & 0xFF; VDPD = e >> 8;
   }
@@ -2589,6 +3746,8 @@ uint8_t game_run(void) {
   for (i = 0; i < NINITVARS; i++) vars[initvar_idx[i]] = initvar_val[i];
   SMS_setFrameInterruptHandler(isr);
   memset(pscroll, 0, sizeof(pscroll)); vscroll_cur = 0; vreg(9, 0);
+  pgp[0] = page[0]; pgp[1] = page[1]; pgp[2] = page[2]; pgp[3] = page[3]; pgp[4] = hcan;
+  hero_valid = 0; memset(hcan, 0, sizeof(hcan)); hero_pages = spr_on = hero_mode = 0; clip_h = H; g_oy = 0; bg_hero_next = 0;
   vreg(1, 0xE0);                                       /* display on + frame IRQ */
   __asm ei __endasm;
   last_disp = ticks;

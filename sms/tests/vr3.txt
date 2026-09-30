@@ -1,0 +1,9 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 763 90000
+print vram_bad
+print vb_cell
+print vb_frame
+print vb_t
+print vb_byte

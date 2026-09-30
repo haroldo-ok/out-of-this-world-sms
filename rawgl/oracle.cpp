@@ -12,6 +12,7 @@ uint32_t g_vtime = 0;
 uint32_t g_opcount[256];
 uint32_t g_opsThisFrame = 0;
 uint32_t g_polyStat[3];
+int g_bb[5]; uint32_t g_bbcol;
 static FILE *g_frames = 0;
 FILE *g_vars = 0;
 static uint32_t g_frameNo = 0;
@@ -128,6 +129,7 @@ int main(int argc, char *argv[]) {
 		if (f) fclose(f);
 	}
 	if (getenv("BGCAP")) g_bgfile = fopen(getenv("BGCAP"), "ab");
+	bg_seen_load();
 	if (getenv("VARS")) g_vars = fopen(getenv("VARS"), "wb");
 	g_debugMask = 0;
 	Graphics::_is1991 = true;

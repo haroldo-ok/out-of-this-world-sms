@@ -1,0 +1,27 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 40 60000
+screenshot /tmp/ss_40.ppm
+waituntil game_frames >= 120 60000
+screenshot /tmp/ss_120.ppm
+waituntil game_frames >= 160 60000
+screenshot /tmp/ss_160.ppm
+waituntil game_frames >= 200 60000
+screenshot /tmp/ss_200.ppm
+waituntil game_frames >= 260 60000
+screenshot /tmp/ss_260.ppm
+waituntil game_frames >= 330 60000
+screenshot /tmp/ss_330.ppm
+waituntil game_frames >= 420 60000
+screenshot /tmp/ss_420.ppm
+waituntil game_frames >= 480 60000
+screenshot /tmp/ss_480.ppm
+waituntil game_frames >= 560 60000
+screenshot /tmp/ss_560.ppm
+waituntil game_frames >= 640 60000
+screenshot /tmp/ss_640.ppm
+waituntil game_frames >= 700 60000
+screenshot /tmp/ss_700.ppm
+waituntil game_frames >= 750 60000
+screenshot /tmp/ss_750.ppm

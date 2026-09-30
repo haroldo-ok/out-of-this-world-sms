@@ -1,0 +1,4 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 763 90000

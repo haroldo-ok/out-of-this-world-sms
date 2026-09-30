@@ -1,0 +1,67 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 150 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 200 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 300 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 400 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 500 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 600 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 700 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 763 60000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy

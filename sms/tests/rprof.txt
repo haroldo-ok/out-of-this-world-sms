@@ -1,0 +1,8 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 1 60000
+profstart
+waituntil game_frames >= 764 60000
+profstop
+profdump /tmp/prt.txt

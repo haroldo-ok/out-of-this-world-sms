@@ -223,6 +223,9 @@ void Video::fillPolygon(uint16_t color, uint16_t zoom, const Point *pt) {
 	int16_t x2 = pt->x + bbw / 2;
 	int16_t y1 = pt->y - bbh / 2;
 	int16_t y2 = pt->y + bbh / 2;
+	{ extern int g_bb[5]; extern uint32_t g_bbcol;
+	  if (x1 < g_bb[0]) g_bb[0] = x1; if (y1 < g_bb[1]) g_bb[1] = y1; if (x2 > g_bb[2]) g_bb[2] = x2; if (y2 > g_bb[3]) g_bb[3] = y2;
+	  if (color < 32) g_bbcol |= 1u << color; g_bb[4]++; }
 
 	if (x1 > 319 || x2 < 0 || y1 > 199 || y2 < 0)
 		return;

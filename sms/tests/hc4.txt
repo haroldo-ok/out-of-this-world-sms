@@ -1,0 +1,8 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 100 60000
+print c_x40
+print game_frames
+print bg_hits
+print vm_bad_op

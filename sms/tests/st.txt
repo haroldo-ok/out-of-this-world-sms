@@ -1,0 +1,11 @@
+symbols obj/game.noi
+run 60
+print stage w1
+tap 1
+run 200
+print stage w1
+print intro_plays
+run 3000
+print stage w1
+print game_frames
+screenshot /tmp/st.ppm

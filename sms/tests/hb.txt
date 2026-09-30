@@ -1,0 +1,11 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 300 60000
+print hero_ok
+print hero_fail
+print hb_col
+print hb_vy
+print hb_vymin
+print hb_plot
+print hb_mask

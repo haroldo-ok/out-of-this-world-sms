@@ -1,0 +1,19 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil game_frames >= 100 30000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
+waituntil game_frames >= 110 30000
+print n_flush
+print hero_ok
+print hero_fail
+print hf_bad
+print hf_many
+print hf_none
+print hf_sy
