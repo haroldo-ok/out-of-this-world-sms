@@ -272,3 +272,16 @@ Next: exclude hero draws from the page hash in both engines (oracle capture rend
   (-DDEMOPLAY, 765 displays, 741 distinct, capture exit at game frame 764) are identical. BBCHECK 1130/0 bad.
 - Free play 100-250: 2429 (upstream) -> 2390 (bbox index) -> 2246 SMS frames; NOFRAMESKIP 3417 -> 3367 -> 3163.
   Route (NOFRAMESKIP) 12605 -> 11895. Fixed code 739 bytes free; RAM data ends 0xDE0C.
+
+## Masks share the LUT bank + asm mask rows
+- mkgame.py: mask data now sits behind the coordinate LUTs in one bank (MASK_BANK == LUT bank, MASK_ADDR = 0x8000 +
+  LUT size); recon: tools/recon/add_masks_to_lut.py. draw_sprite_mask: outside the hero canvas (no bbm/hero_mode,
+  g_oy 0, clip_h H) and for -512 <= x <= 768, ms_setup (asm) clips the row range to 0 <= ay < 200 once and ms_loop
+  (asm) reads mask rows and both LUTs through pointers (no tx_/ty_ calls, no bank switch except after a band flush);
+  everything else goes to draw_sprite_mask_c (the old code). 29.7k -> 16.5k cycles per mask (rest is band_flush).
+  A C version of the same loop compiled to ~700 bytes; the asm setup + loop is ~430.
+- build.sh: the fixed-code limit is 0x7FE0 (SDSC header), not 0x7FF0 -- a build with 12 bytes "free" overwrote code
+  with the SDSC header and crashed at boot. ALLOCS=<n> sets --max-allocs-per-node (100000 takes > 5 min here).
+- Exactness (NOFRAMESKIP, hooklog display, vs upstream c3f71cb): free play 250/250 and route 765/765 identical.
+- Free play 100-250: 2246 -> 2164 SMS frames (NOFRAMESKIP 3163 -> 3032); route (NOFRAMESKIP) 11895 -> 11380.
+  ~881k cycles/game frame (upstream ~990k). Fixed code 249 bytes free; RAM data ends 0xDE19, route stack low 0xDED1.

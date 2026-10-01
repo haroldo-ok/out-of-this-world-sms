@@ -61,13 +61,15 @@ for o in offs:
         xs=[i for i,b in enumerate(bits) if b]
         if xs: assert xs[-1]-xs[0]+1==len(xs), 'mask row with several runs'; mdata+=bytes([xs[0],xs[-1]])
         else: mdata+=b'\xff\xff'
-place('MASK',bytes(mdata)); H.append('#define NMASKS %d'%len(moffs))
+H.append('#define NMASKS %d'%len(moffs))
 H.append('static const uint16_t mask_off[]={%s};'%','.join(str(x) for x in moffs))
 # coordinate LUTs: AW 320x200 -> 208x136
 XMIN,XMAX,YMIN,YMAX=-512,1023,-384,639
 H.append('#define LUTX_MIN %d\n#define LUTX_MAX %d\n#define LUTY_MIN %d\n#define LUTY_MAX %d'%(XMIN,XMAX,YMIN,YMAX))
 lut=struct.pack('<%dh'%(XMAX-XMIN+1),*[math.floor(x*13/20) for x in range(XMIN,XMAX+1)])+struct.pack('<%dh'%(YMAX-YMIN+1),*[math.floor(y*17/25) for y in range(YMIN,YMAX+1)])
-place('LUT',lut); H.append('#define LUTY_OFF %d'%(2*(XMAX-XMIN+1)))
+assert len(lut)+len(mdata)<=BANK
+lb=place('LUT',lut+bytes(mdata)); H.append('#define LUTY_OFF %d'%(2*(XMAX-XMIN+1)))
+H.append('#define MASK_BANK %d\n#define MASK_ADDR 0x%04X'%(lb,0x8000+len(lut)))   # masks share the LUT bank
 # reciprocal table for the edge stepper
 H.append('static const uint16_t recip[256]={%s};'%','.join(str(0x4000//max(d,1)) for d in range(256)))
 # volume attenuation offsets for script volume 0..63

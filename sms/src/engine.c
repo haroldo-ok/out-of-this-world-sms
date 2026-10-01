@@ -1702,13 +1702,266 @@ converted:
   else draw_polygon(color, n);
 }
 /* 1991 DOS renderer bitmap masks: one run per row (precomputed), rasterised through the polygon band path */
+void draw_sprite_mask_c(uint8_t num, int16_t x, int16_t y, uint8_t color);
+/* masks and coordinate LUTs share LUT_BANK. Outside the hero canvas (g_oy 0, clip_h H) a row with 0 <= ay < 200
+   always maps to a valid line, so the row range is clipped once and ms_loop reads the LUTs through pointers:
+   same rows, same band writes as draw_sprite_mask_c (used for everything else). */
+const uint8_t *ms_m; const int16_t *ms_lx, *ms_ly; uint8_t ms_n, ms_last, ms_sy;
+void ms_loop(void) __naked {
+  __asm
+00001$:
+    ld a,(_ms_n)
+    or a
+    ret z
+    dec a
+    ld (_ms_n),a
+    ld hl,(_ms_m)
+    ld c,(hl)                  ; r0
+    inc hl
+    ld b,(hl)                  ; r1
+    inc hl
+    ld (_ms_m),hl
+    ld hl,(_ms_ly)
+    ld e,(hl)                  ; sy = LUTY[ay] (0..135)
+    inc hl
+    inc hl
+    ld (_ms_ly),hl
+    ld a,c
+    inc a
+    jr z,00001$                ; empty row
+    ld a,(_ms_last)
+    cp e
+    jr z,00001$                ; rows merging into one SMS line
+    ld a,e
+    ld (_ms_last),a
+    ld (_ms_sy),a
+    ld a,b                     ; save r1
+    ld hl,(_ms_lx)
+    ld b,#0
+    push hl
+    add hl,bc
+    add hl,bc
+    ld e,(hl)
+    inc hl
+    ld d,(hl)                  ; de = a = LUTX[x + r0]
+    pop hl
+    ld c,a
+    add hl,bc
+    add hl,bc
+    ld c,(hl)
+    inc hl
+    ld b,(hl)                  ; bc = b = LUTX[x + r1]
+    bit 7,b
+    jr nz,00001$               ; b < 0
+    bit 7,d
+    jr nz,00010$               ; a < 0 -> 0
+    ld a,d
+    or a
+    jr nz,00001$               ; a >= 256
+    ld a,e
+    cp #208
+    jr nc,00001$               ; a >= W
+    jr 00011$
+00010$:
+    ld e,#0
+00011$:
+    ld a,b
+    or a
+    jr nz,00012$
+    ld a,c
+    cp #208
+    jr c,00013$
+00012$:
+    ld c,#207                  ; b >= W -> W - 1
+00013$:
+    ld a,(_ms_sy)
+    and #0xF8
+    ld hl,#_band_y0            ; band_y0 is -1 or 0..0x80: the low byte decides
+    cp (hl)
+    jr z,00020$
+    push bc
+    push de
+    call _band_flush
+    pop de
+    pop bc
+    ld a,(_slot2)
+    cp #LUT_BANK
+    jr z,00015$
+    ld a,#LUT_BANK
+    ld (_slot2),a
+    xor a
+    ld (#0xFFFC),a
+    ld a,#LUT_BANK
+    ld (#0xFFFF),a
+00015$:
+    ld a,(_ms_sy)
+    and #0xF8
+    ld (_band_y0),a
+    xor a
+    ld (_band_y0+1),a
+00020$:
+    ld a,(_ms_sy)
+    and #7
+    push bc
+    ld c,a
+    ld b,#0
+    ld hl,#_bxa
+    add hl,bc
+    ld (hl),e
+    ld hl,#_bittab
+    add hl,bc
+    ld a,(_bmask)
+    or (hl)
+    ld (_bmask),a
+    ld hl,#_bxb
+    add hl,bc
+    pop bc
+    ld (hl),c
+    jp 00001$
+  __endasm;
+}
+int16_t ms_x, ms_y;
+/* setup for ms_loop (num in ms_sy, colour already in bcolor); A = 1: not handled here, use draw_sprite_mask_c */
+uint8_t ms_setup(void) __naked {
+  __asm
+    ld a,(_bbm)
+    ld hl,#_hero_mode
+    or (hl)
+    ld hl,(_g_oy)
+    or h
+    or l
+    jp nz,00090$
+    ld a,(_clip_h)
+    cp #H
+    jp nz,00090$
+    ld a,(_ms_sy)
+    cp #NMASKS
+    jp nc,00090$
+    ld l,a                     ; hl = MASK_ADDR + mask_off[num]
+    ld h,#0
+    add hl,hl
+    ld de,#_mask_off
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld hl,#MASK_ADDR
+    add hl,de
+    ld a,#LUT_BANK
+    ld (_slot2),a
+    xor a
+    ld (#0xFFFC),a
+    ld a,#LUT_BANK
+    ld (#0xFFFF),a
+    ld c,(hl)                  ; w
+    inc hl
+    ld b,(hl)                  ; h
+    inc hl
+    ld (_ms_m),hl
+    srl c                      ; w / 2
+    ld hl,(_ms_x)              ; x -= w/2
+    ld e,c
+    ld d,#0
+    or a
+    sbc hl,de
+    ld (_ms_x),hl
+    ld de,#512                 ; need -512 <= x <= 768: x + 512 <= 1280 unsigned
+    add hl,de
+    ld de,#1281
+    or a
+    sbc hl,de
+    jp nc,00091$
+    ld a,b                     ; y -= h/2
+    srl a
+    ld e,a
+    ld d,#0
+    ld hl,(_ms_y)
+    or a
+    sbc hl,de
+    ld (_ms_y),hl
+    bit 7,h                    ; y < 0 ?
+    jr z,00010$
+    ld e,b                     ; y + h <= 0 -> nothing visible
+    ld d,#0
+    add hl,de
+    bit 7,h
+    jp nz,00091$
+    ld a,h
+    or l
+    jp z,00091$
+    ld hl,(_ms_y)              ; j = -y (0..h-1), j1 = h
+    xor a
+    sub l
+    ld c,a
+    jr 00020$
+00010$:                        ; y >= 0: need y < 200; j = 0, j1 = min(h, 200 - y)
+    ld a,h
+    or a
+    jp nz,00091$
+    ld a,l
+    cp #200
+    jp nc,00091$
+    ld c,#0
+    ld a,#200
+    sub l
+    cp b
+    jr nc,00020$
+    ld b,a
+00020$:                        ; c = j, b = j1
+    ld a,b
+    sub c
+    ld (_ms_n),a
+    ld a,#0xFF
+    ld (_ms_last),a
+    ld l,c
+    ld h,#0
+    add hl,hl
+    ld de,(_ms_m)
+    add hl,de
+    ld (_ms_m),hl              ; first row j
+    ld hl,(_ms_x)
+    ld de,#512
+    add hl,de
+    add hl,hl
+    ld de,#0x8000
+    add hl,de
+    ld (_ms_lx),hl             ; &LUTX[x - LUTX_MIN]
+    ld hl,(_ms_y)
+    ld e,c
+    ld d,#0
+    add hl,de
+    ld de,#384
+    add hl,de
+    add hl,hl
+    ld de,#0x8000 + LUTY_OFF
+    add hl,de
+    ld (_ms_ly),hl             ; &LUTY[y + j - LUTY_MIN]
+    xor a
+    ld (_bmask),a
+    dec a
+    ld (_band_y0),a
+    ld (_band_y0+1),a
+    call _ms_loop
+    call _band_flush
+    xor a
+    ret
+00091$:                        ; nothing drawn by the fast path: the C version handles the rare cases
+00090$:
+    ld a,#1
+    ret
+  __endasm;
+}
 void draw_sprite_mask(uint8_t num, int16_t x, int16_t y, uint8_t color) {
+  ms_sy = num; ms_x = x; ms_y = y; bcolor = color;
+  if (ms_setup()) draw_sprite_mask_c(num, x, y, color);
+}
+void draw_sprite_mask_c(uint8_t num, int16_t x, int16_t y, uint8_t color) {
   if (bbm) { if (x - 32 < bb_x1) bb_x1 = x - 32; if (x + 32 > bb_x2) bb_x2 = x + 32; if (y - 32 < bb_y1) bb_y1 = y - 32; if (y + 32 > bb_y2) bb_y2 = y + 32; return; }
   uint16_t off; uint8_t w, h, j, r0, r1; int16_t ay, sy, last_sy = -1000, a, b;
   if (num >= NMASKS) return;
   if (hero_mode) { if (color == 0) color = 14; else if (color == 14 || color >= 16) { hero_bad = 1; return; } }
   off = mask_off[num];
-  map_rom(MASK_BANK); w = *(const uint8_t *)(0x8000 + off); h = *(const uint8_t *)(0x8001 + off); off += 2;
+  map_rom(MASK_BANK); w = *(const uint8_t *)(MASK_ADDR + off); h = *(const uint8_t *)(MASK_ADDR + 1 + off); off += 2;
   x -= w / 2; y -= h / 2;
   bcolor = color; bmask = 0; band_y0 = -1;
 #ifdef STATS
@@ -1716,7 +1969,7 @@ void draw_sprite_mask(uint8_t num, int16_t x, int16_t y, uint8_t color) {
 #endif
   for (j = 0; j < h; j++, off += 2) {
     ay = y + j; sy = ty_(ay) - g_oy;
-    map_rom(MASK_BANK); r0 = *(const uint8_t *)(0x8000 + off); r1 = *(const uint8_t *)(0x8001 + off);
+    map_rom(MASK_BANK); r0 = *(const uint8_t *)(MASK_ADDR + off); r1 = *(const uint8_t *)(MASK_ADDR + 1 + off);
     if (r0 == 0xFF) continue;
     if (hero_mode && (sy < 0 || sy >= (int16_t)clip_h)) { hero_bad = 1; break; }
     if (sy == last_sy || ay < 0 || ay >= 200 || sy < 0 || sy >= (int16_t)clip_h) continue;   /* rows merging into one SMS line */

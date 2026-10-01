@@ -34,7 +34,7 @@ moffs=[]; L=0
 for o in offs:
     w,h=data[o],data[o+1]; moffs.append(L); L+=2+2*h
 a+=4*len(used); assert u16(a,len(moffs))==moffs, 'mask_off mismatch'
-H+=['#define MASK_BANK 9','#define NMASKS %d'%len(moffs),'static const uint16_t mask_off[]={%s};'%','.join(map(str,moffs))]
+H+=['#define MASK_BANK 10','#define MASK_ADDR 0x9400','#define NMASKS %d'%len(moffs),'static const uint16_t mask_off[]={%s};'%','.join(map(str,moffs))]
 H+=['#define LUTX_MIN -512\n#define LUTX_MAX 1023\n#define LUTY_MIN -384\n#define LUTY_MAX 639','#define LUT_BANK 10','#define LUTY_OFF 3072']
 recip=[0x4000//max(d,1) for d in range(256)]; a+=2*len(moffs); assert a==0x4d0 and u16(a,256)==recip
 H.append('static const uint16_t recip[256]={%s};'%','.join(map(str,recip)))

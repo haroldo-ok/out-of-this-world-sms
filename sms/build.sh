@@ -2,7 +2,7 @@
 set -e
 cd /home/claude/w/sms
 DK=$HOME/.devkitsms
-CF="$XCF -mz80 -I$DK/include --peep-file $DK/include/peep-rules.txt --opt-code-speed --max-allocs-per-node 5000"
+CF="$XCF -mz80 -I$DK/include --peep-file $DK/include/peep-rules.txt --opt-code-speed --max-allocs-per-node ${ALLOCS:-5000}"
 mkdir -p obj
 # main first so it (and the bank-switching around the FMV call) stays in slot 0;
 # the FMV player is linked as slot-1 code in ROM bank 12 (mapped only while it runs)
@@ -20,8 +20,8 @@ m=open('obj/game.map').read(); end=0
 for n in ('_CODE','_HOME','_INITIALIZER','_GSINIT','_GSFINAL'):
     r=re.search(r'^%s\s+([0-9A-F]{8})\s+([0-9A-F]{8})'%n,m,re.M)
     if r: end=max(end,int(r.group(1),16)+int(r.group(2),16))
-print('fixed code ends at 0x%04X (%d bytes free before the header)'%(end,0x7FF0-end))
-assert end<=0x7FF0,'fixed code overflows into the ROM header'
+print('fixed code ends at 0x%04X (%d bytes free before the SDSC header)'%(end,0x7FE0-end))
+assert end<=0x7FE0,'fixed code overflows into the SDSC/SEGA headers (0x7FE0)'
 PY
 $DK/bin/ihx2sms obj/game.ihx obj/code.sms
 python3 mkrom.py ootw.sms obj/code.sms ${BLOBS:-2:gen/game.bin 13:gen/const.bin 14:gen/flat.bin 64:gen/fmv.bin 150:gen/bg.bin}
