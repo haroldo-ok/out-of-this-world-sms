@@ -8,9 +8,9 @@ mkdir -p obj
 # the FMV player is linked as slot-1 code in ROM bank 12 (mapped only while it runs)
 OBJS="obj/main.rel"
 sdcc -c $CF src/main.c -o obj/main.rel
-for f in ${SRCS:-fmv engine}; do
+for f in ${SRCS:-fmv title engine}; do
   [ "$f" = main ] && continue
-  if [ "$f" = fmv ]; then sdcc -c $CF --codeseg BANK12 src/fmv.c -o obj/fmv.rel; else sdcc -c $CF src/$f.c -o obj/$f.rel; fi
+  if [ "$f" = fmv ] || [ "$f" = title ]; then sdcc -c $CF --codeseg BANK12 --constseg BANK12 src/$f.c -o obj/$f.rel; else sdcc -c $CF src/$f.c -o obj/$f.rel; fi
   OBJS="$OBJS obj/$f.rel"
 done
 sdcc -o obj/game.ihx -mz80 --no-std-crt0 --data-loc 0xC000 -Wl-b_BANK12=0xC4000 $DK/lib/crt0_sms.rel $OBJS $DK/lib/SMSlib.lib $DK/lib/PSGlib.lib

@@ -1,6 +1,9 @@
 symbols obj/game.noi
 run 60
 tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
 waituntil game_frames >= 150 60000
 waituntil game_frames >= 151 60000
 waituntil game_frames >= 152 60000

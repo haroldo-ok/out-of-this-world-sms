@@ -11,6 +11,11 @@
 #include "engine.h"
 #include "../gen/gamedata.h"
 #include "../gen/constdata.h"
+/* Lester is kept out of the page-state cache either way (cached backgrounds are pose-independent). By default he is
+   drawn into the background (measured 4-8% faster than the sprite canvas); -DHERO_SPRITES shows him as sprites. */
+#ifndef HERO_SPRITES
+#define NOSPRITES
+#endif
 #include "../gen/bgdata.h"
 
 __sfr __at 0xBF VDPC;
@@ -1342,7 +1347,127 @@ void draw_polygon_(uint8_t color, uint8_t n) {
   dpl_loop();
 }
 /* one pixel (x < W, y < clip_h) into the work page: particles and single-point shapes */
+/* colours 0-15: asm pixel writer; px_wr() does the copy-on-write */
+uint8_t px_x, px_y, px_c; uint16_t px_cell, px_t;
+void px_wr(void) { px_t = writable(buf[0], px_cell); }
+void pix_a(void) __naked {
+  __asm
+    ld a,(_px_y)
+    rrca
+    rrca
+    rrca
+    and #0x1F
+    ld l,a
+    ld h,#0
+    add hl,hl
+    push hl
+    add hl,hl
+    add hl,hl
+    push hl
+    add hl,hl
+    pop de
+    add hl,de
+    pop de
+    add hl,de
+    ld a,(_px_x)
+    rrca
+    rrca
+    rrca
+    and #0x1F
+    ld e,a
+    ld d,#0
+    add hl,de
+    ld (_px_cell),hl
+    ex de,hl
+    ld a,(_buf)
+    add a,a
+    ld c,a
+    ld b,#0
+    ld hl,#_pgp
+    add hl,bc
+    ld a,(hl)
+    inc hl
+    ld h,(hl)
+    ld l,a
+    add hl,de
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld a,(hl)
+    or a
+    jr nz,00001$
+    ld a,(_px_c)
+    cp e
+    ret z
+00001$:
+    call _px_wr
+    ld hl,(_px_t)
+    ld a,h
+    and l
+    inc a
+    ret z
+    ld a,h
+    srl a
+    ld b,a
+    or #0xFE
+    ld (_slot2),a
+    ld a,b
+    rlca
+    rlca
+    or #0x08
+    ld (#0xFFFC),a
+    ld a,h
+    and #1
+    ld h,a
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld a,(_px_y)
+    and #7
+    add a,a
+    add a,a
+    or l
+    ld l,a
+    set 7,h
+    ld a,(_px_x)
+    and #7
+    ld b,a
+    ld a,#0x80
+    jr z,00003$
+00002$:
+    rrca
+    djnz 00002$
+00003$:
+    ld c,a
+    cpl
+    ld b,a
+    ld a,(_px_c)
+    ld d,a
+    ld e,#4
+00004$:
+    ld a,(hl)
+    rr d
+    jr c,00005$
+    and b
+    jr 00006$
+00005$:
+    or c
+00006$:
+    ld (hl),a
+    inc hl
+    dec e
+    jr nz,00004$
+    ret
+  __endasm;
+}
+void pix_c(uint8_t x, uint8_t y, uint8_t color);
 void pix(uint8_t x, uint8_t y, uint8_t color) {
+  if (color < 16) { px_x = x; px_y = y; px_c = color; pix_a(); return; }
+  pix_c(x, y, color);
+}
+void pix_c(uint8_t x, uint8_t y, uint8_t color) {
   uint8_t work = buf[0], m = 0x80 >> (x & 7), ty = y >> 3, *p;
   uint16_t cell = ((uint16_t)ty << 4) + ((uint16_t)ty << 3) + ((uint16_t)ty << 1) + (x >> 3), t = pgp[work][cell];
   if (color < 16) { if (t == color) return; }
@@ -2035,9 +2160,9 @@ void find_diff(void) __naked {
 
 void set_vram(uint16_t a) { VDPC = a & 0xFF; VDPC = (a >> 8) | 0x40; }
 #ifndef MAXSKIP
-#define MAXSKIP 1          /* at most this many pictures dropped in a row */
+#define MAXSKIP 2          /* at most this many pictures dropped in a row (busy scenes show >= 1 in 3) */
 #endif
-uint8_t skip_run; uint16_t frames_skipped, sched;
+uint8_t skip_run, maxskip = MAXSKIP; uint16_t frames_skipped, sched;
 void display(uint8_t p) {
   uint16_t c, key, t; uint16_t *pp;
   uint8_t i;
@@ -2053,7 +2178,7 @@ void display(uint8_t p) {
      palette); its queued draws are discarded when the page is next overwritten. */
   { uint16_t due = ((uint16_t)vars[0xFF] * 6 + 4) / 5;
     sched += due;
-    if (!ff && game_frames && next_pal == 0xFF && skip_run < MAXSKIP && due && (int16_t)(ticks - sched) >= (int16_t)due) {
+    if (!ff && game_frames && next_pal == 0xFF && skip_run < maxskip && due && (int16_t)(ticks - sched) >= (int16_t)due) {
       skip_run++; frames_skipped++; game_frames++; return;
     }
     skip_run = 0;
@@ -2454,7 +2579,37 @@ void play_sound(uint16_t res, uint8_t freq, uint8_t vol, uint8_t ch) {
     return;
   }
 }
-void isr(void) { ticks++; snd_tick(); }
+uint8_t snd_hold; unsigned int pad_latch, pad_prev;
+/* VBlank: keep buttons that were newly pressed since the last game frame (a quick tap is not lost between
+   game frames); held buttons are read directly, so direction changes are not blended */
+void isr(void) { unsigned int kk; ticks++; kk = SMS_getKeysStatus(); pad_latch |= kk & ~pad_prev; pad_prev = kk; if (!snd_hold) snd_tick(); }
+/* Pause button: freeze the game, mute the PSG, dim the picture; the same button resumes */
+void game_pause(void) {
+  uint8_t i, c;
+  SMS_resetPauseRequest();
+  snd_hold = 1;
+  PSGP = 0x9F; PSGP = 0xBF; PSGP = 0xDF; PSGP = 0xFF;
+  for (i = 0; i < 4; i++) psg_last[i] = 0xFFFF;
+  if (cur_pal < 32) {
+    map_rom(CONST_BANK);
+    __asm di __endasm; VDPC = 0; VDPC = 0xC0;
+    for (i = 0; i < 16; i++) { c = PAL_SMS[(uint16_t)cur_pal * 16 + i]; VDPD = (c >> 1) & 0x15; }
+    __asm ei __endasm;
+  }
+  while (!SMS_queryPauseRequested()) SMS_waitForVBlank();
+  SMS_resetPauseRequest();
+  if (cur_pal < 32) {
+    map_rom(CONST_BANK);
+    __asm di __endasm; VDPC = 0; VDPC = 0xC0;
+    for (i = 0; i < 16; i++) VDPD = PAL_SMS[(uint16_t)cur_pal * 16 + i];
+    __asm ei __endasm;
+  }
+  snd_hold = 0; pad_latch = 0;
+  last_disp = ticks;
+#ifndef NOFRAMESKIP
+  sched = ticks;
+#endif
+}
 
 /* ------------------------------------------------------------------ page-state cache */
 /* Every page carries a rolling hash of what produced it (fills, copies, draw operands), identical to the
@@ -2511,6 +2666,77 @@ void bgb(uint8_t p, uint8_t b) __naked {
 void bgw(uint8_t p, uint16_t w) { bgb(p, w >> 8); bgb(p, w & 255); }
 uint8_t pending(uint8_t p) { uint8_t k; for (k = 0; k < ndl; k++) if (dl[k].pg == p) return 1; return 0; }
 /* binary search of the key table: returns 1 and fills *bank/*addr on a hit */
+/* binary search of bk_key among bk_n 6-byte entries (u32 key, u16 map index) at 0x8000; A = 1 when found */
+uint32_t bk_key; uint16_t bk_n, bk_addr; int16_t bk_lo, bk_hi;
+uint8_t bgl_find(void) __naked {
+  __asm
+    ld hl,#0
+    ld (_bk_lo),hl
+    ld hl,(_bk_n)
+    dec hl
+    ld (_bk_hi),hl
+00001$:
+    ld hl,(_bk_hi)
+    ld de,(_bk_lo)
+    or a
+    sbc hl,de
+    jp m,00090$
+    ld hl,(_bk_lo)
+    ld de,(_bk_hi)
+    add hl,de
+    srl h
+    rr l
+    push hl
+    ld d,h
+    ld e,l
+    add hl,hl
+    add hl,de
+    add hl,hl
+    set 7,h
+    inc hl
+    inc hl
+    inc hl
+    ld a,(_bk_key+3)
+    cp (hl)
+    jr nz,00010$
+    dec hl
+    ld a,(_bk_key+2)
+    cp (hl)
+    jr nz,00010$
+    dec hl
+    ld a,(_bk_key+1)
+    cp (hl)
+    jr nz,00010$
+    dec hl
+    ld a,(_bk_key)
+    cp (hl)
+    jr nz,00010$
+    inc hl
+    inc hl
+    inc hl
+    inc hl
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    ld (_bk_addr),de
+    pop hl
+    ld a,#1
+    ret
+00010$:
+    pop hl
+    jr c,00020$
+    inc hl
+    ld (_bk_lo),hl
+    jp 00001$
+00020$:
+    dec hl
+    ld (_bk_hi),hl
+    jp 00001$
+00090$:
+    xor a
+    ret
+  __endasm;
+}
 uint8_t bg_lookup(uint32_t key, uint8_t *bank, uint16_t *addr) {
   int16_t lo, hi; uint8_t kb, nb, i;
   uint16_t fi = ((uint16_t)(key >> 16) ^ (uint16_t)key) & 0x3FFF;
@@ -2519,15 +2745,10 @@ uint8_t bg_lookup(uint32_t key, uint8_t *bank, uint16_t *addr) {
   if (!(*(const uint8_t *)(0x8000 + (fi >> 3)) & bittab[fi & 7])) return 0;     /* key filter */
   f = (const uint8_t *)0x8800; nb = f[0]; f++;
   for (kb = 0, i = 1; i < nb; i++) if (*(const uint32_t *)(f + i * 6 + 2) <= key) kb = i;   /* key bank by first key */
-  hi = *(const uint16_t *)(f + kb * 6) - 1; lo = 0;
+  bk_n = *(const uint16_t *)(f + kb * 6); (void)lo; (void)hi;
   map_rom(BGK_BANK + kb);
-  while (lo <= hi) {
-    int16_t mid = (lo + hi) >> 1; uint16_t m6 = ((uint16_t)mid << 2) + ((uint16_t)mid << 1);
-    const uint8_t *e = (const uint8_t *)(0x8000 + m6);
-    uint32_t k = *(const uint32_t *)e;
-    if (k == key) { *bank = 0; *addr = *(const uint16_t *)(e + 4); return 1; }
-    if (k < key) lo = mid + 1; else hi = mid - 1;
-  }
+  bk_key = key;
+  if (bgl_find()) { *bank = 0; *addr = bk_addr; return 1; }
   return 0;
 }
 uint16_t bgl_rows[17], *bgl_dst, *bgl_pid; uint8_t *bgl_drow, bgl_i;
@@ -2966,7 +3187,8 @@ void update_input(void) {
     vars[0xE5] = ud; vars[0xFB] = ud; vars[0xFC] = lr; vars[0xFD] = dm & 0x0F; vars[0xFA] = (dm & 0x80) ? 1 : 0; vars[0xFE] = dm;
     return; }
 #endif
-  unsigned int k = SMS_getKeysStatus();
+  unsigned int k = SMS_getKeysStatus() | pad_latch;   /* presses since the last game frame count too */
+  pad_latch = 0;
   int16_t lr = 0, ud = 0, jd = 0; uint8_t m = 0;
   if (k & PORT_A_KEY_RIGHT) { lr = 1; m |= 1; }
   if (k & PORT_A_KEY_LEFT) { lr = -1; m |= 2; }
@@ -3752,6 +3974,7 @@ uint8_t game_run(void) {
   __asm ei __endasm;
   last_disp = ticks;
   for (;;) {
+    if (SMS_queryPauseRequested()) game_pause();
     run_tasks();
     if (ending_hit) break;
 #ifdef CAPTURE_PC

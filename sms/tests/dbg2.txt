@@ -1,6 +1,9 @@
 symbols obj/game.noi
 run 60
 tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
 run 1000
 print pc
 print n_flush

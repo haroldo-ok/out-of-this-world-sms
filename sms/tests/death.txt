@@ -1,0 +1,20 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
+waituntil game_frames >= 150 60000
+screenshot /tmp/d1.ppm
+run 600
+screenshot /tmp/d2.ppm
+print game_frames
+hold 1
+run 60
+hold none
+run 240
+print game_frames
+screenshot /tmp/d3.ppm
+run 900
+print game_frames
+screenshot /tmp/d4.ppm

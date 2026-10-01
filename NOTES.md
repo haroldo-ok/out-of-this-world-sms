@@ -196,3 +196,45 @@ Next: exclude hero draws from the page hash in both engines (oracle capture rend
 - Held-out free play (never in the capture set), game frames 100-250: no skip 4217 -> 3851 SMS frames (hits 105 -> 164);
   default (frame skip) 3232 -> 3010. Ceiling analysis: base ROM already covers 52% of cacheable polygons in that play;
   all 300-run prefixes would give 81% but need ~30k states (does not fit).
+
+## Default: Lester drawn into the background
+- Measured (identical images): background Lester is faster than the sprite canvas: free play 3010 -> 2819 SMS frames
+  (frame skip) / 3851 -> 3559 (no skip); route 11372 -> 10946 / 14468 -> 13743. The sprite path paid a fresh canvas and
+  a C upload loop every frame; the background path only copies the tiles he touches and uses the asm upload.
+- Lester stays excluded from the cache hash in both modes (that is what makes cached backgrounds pose-independent);
+  the overlap rule still decides whether he can be drawn last or must be drawn in order.
+- Sprites remain available with -DHERO_SPRITES; the 14 spare sprite tiles are now free for other uses.
+
+## Floating tiny shapes (experiment, reverted) + capture fix
+- Found and fixed in the oracle capture: g_heroDraw (Lester flag) leaked from a 0x40 draw into a following 0x80 draw
+  (that draw was then neither hashed nor rendered in capture mode). Recaptured with tools/recapture.sh (route +
+  underwater variants + top 3500 recurring states of 1200 random runs; ~5 min, run it in the background).
+- Experiment: 24 tiny shapes (box <= 4x4 AW px) kept out of the page hash like Lester and drawn on top when no later
+  draw overlaps them (per-entry coarse boxes). Held-out free play: 3602 -> 3634 SMS frames (no skip), hits 163 -> 168:
+  no gain, reverted (code kept in the notes' history only). The state variety comes from larger animated elements.
+- Note: pixel comparisons against a no-cache build always differ (~1100 px): cached pages are sampled from the original
+  320x200 render, live drawing uses the 208x136 rasterizer. Compare builds that share the same cache data.
+- mkbbox.py now also writes cap/floatset.bin and flags floating shapes in the table (ignored by the engine).
+
+## Small asm round
+- pix(): colours 0-15 in asm (pix_a; copy-on-write through px_wr). Free play 2823 -> 2711.
+- bg_lookup(): binary search over the 6-byte key entries in asm (bgl_find). 2711 -> 2682.
+- Tried, exact but no gain / slower, reverted: writable() core in asm (cost is in alloc + copy), block reads of
+  shape-hierarchy headers (pread_a) -> 2711.
+- Exactness checked with -DPAGETRACE page checksums (613 frames, same cache data): identical.
+
+## Frame skip default: MAXSKIP 2
+- Free play 100-250: MAXSKIP 1: 2682 SMS frames (110/250 pictures dropped); 2: 2420 (143); 3: 2282 (160).
+  Route: 10326 / 9612 / 9249 SMS frames (353 / 464 / 518 of 764 dropped).
+- Default is now 2 (busy scenes show at least 1 picture in 3); -DMAXSKIP=1 or 3 to change, -DNOFRAMESKIP for exact pacing.
+
+## Polish and playability
+- Title / options screen after the intro (src/title.c, linked into bank 12 with the FMV player, interrupts off):
+  START, FRAME SKIP OFF/NORMAL/HIGH (sets maxskip at run time, default HIGH = 2), controls legend.
+  Idle 30 s -> intro again (attract). No SDCC library helpers (%, /) in bank-12 code: slot 1 is remapped while it runs
+  (a % there jumped into bank 12 and corrupted the option). No initialised globals in bank-12 files.
+- Pause button: freezes the game, mutes the PSG (sound ticks held), dims the palette; resumes where it was.
+- Input: the VBlank handler latches newly pressed buttons between game frames, so a quick tap is never lost
+  (the game samples input once per game frame, i.e. every several console frames in busy scenes).
+- Death / continue verified (PRESS BUTTON ... ACCESS CODE screen -> restart underwater), now also with a 2-frame tap.
+- Autoplay build (-DDEMOPLAY) skips the title (waits <= 1 s for an optional tap, so test scripts work for both builds).

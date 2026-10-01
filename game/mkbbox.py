@@ -24,15 +24,18 @@ def walk(data, off, x, y, box):
             walk(data, (o<<1)&0xFFFF, pox, poy, box)
 dis=open('/home/claude/w/wd/ootwdemo_16002.bytecode.txt').read()
 keys=sorted(set((1 if b=='1' else 2,int(o,16)) for o,b in re.findall(r'offset=0x([0-9a-f]+) \(bank([12])\.mat\)',dis)))
-tab=bytearray(); n=0
+tab=bytearray(); n=0; floats=[]
 for seg,off in keys:
     data=V1 if seg==1 else V2
     if off>=len(data): continue
     box=[32000,32000,-32000,-32000]
     walk(data,off,0,0,box)
-    tab+=struct.pack('<HBBhhhh',off,seg,0,*box); n+=1
+    fl=1 if (box[0]<=box[2] and box[2]-box[0]<=4 and box[3]-box[1]<=4) else 0   # floating: kept out of the page hash
+    tab+=struct.pack('<HBBhhhh',off,seg,fl,*box); n+=1
+    if fl: floats.append((seg,off))
 h=open('/home/claude/w/sms/gen/gamedata.h').read()
 h=re.sub(r'\n#define NBBOX.*?\n(static const uint8_t bbox_tab\[\]=\{[^}]*\};\n)?','\n',h,flags=re.S)
 h+='#define NBBOX %d\nstatic const uint8_t bbox_tab[]={%s};\n'%(n,','.join(str(b) for b in tab))
 open('/home/claude/w/sms/gen/gamedata.h','w').write(h)
-print('bbox table: %d shapes, %d bytes'%(n,len(tab)))
+open('/home/claude/w/cap/floatset.bin','wb').write(b''.join(struct.pack('<BH',s_,o_) for s_,o_ in floats))
+print('bbox table: %d shapes, %d bytes, %d floating'%(n,len(tab),len(floats)))

@@ -28,3 +28,14 @@ DOS demo files (MEMLIST.BIN + BANKxx) by the tools below.
 7. Tests: `tools/smstest/smstest sms/ootw.sms sms/tests/fmv.txt` (and game2/pool tests)
 
 Requires the devkitSMS toolchain (SDCC, ihx2sms, SMSlib, PSGlib), Python 3 with numpy + Pillow.
+
+## Playing
+After the intro (any button skips it) the title screen appears:
+- **START** begins the level; **FRAME SKIP** (left/right or a button) chooses how much the game may drop pictures in
+  busy scenes: OFF (every picture, slowest), NORMAL (at most 1 in a row), HIGH (at most 2 in a row, default).
+- Left alone for 30 seconds, the title returns to the intro.
+
+Controls: D-pad move (Up also jumps), **Button 1** action / run / kick, **Button 2** jump, **PAUSE** pauses
+(picture dimmed, sound muted; press again to resume).
+
+The ROM needs a Sega mapper with 32 KB of cartridge RAM (runs in Emulicious).

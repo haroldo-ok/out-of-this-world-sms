@@ -16,6 +16,7 @@
 #include "util.h"
 #include "trace.h"
 int g_heroX = -1, g_heroY = -1, g_heroDraw = 0;
+int bg_is_floating(int seg, int off, int zoom);
 
 
 Script::Script(Mixer *mix, Resource *res, SfxPlayer *ply, Video *vid)
@@ -481,9 +482,12 @@ void Script::executeTask() {
 			_vid->setDataBuffer(_res->_segVideo1, off);
 			TR("shape 1 %d %d %d 64 pg%d", off, pt.x, pt.y, _vid->_buffers[0]);
 			{ extern int g_bb[5]; extern uint32_t g_bbcol; g_bb[0] = g_bb[1] = 30000; g_bb[2] = g_bb[3] = -30000; g_bb[4] = 0; g_bbcol = 0; }
+			g_heroDraw = bg_is_floating(1, off, 64);
 			bg_shape(_vid->_buffers[0], 1, off, pt.x, pt.y, 64);
+			static int capHero80 = getenv("BGCAP") ? 1 : 0;
 			if (_is3DO) {
 				_vid->drawShape3DO(0xFF, 64, &pt);
+			} else if (g_heroDraw && capHero80) {
 			} else {
 				_vid->drawShape(0xFF, 64, &pt);
 				{ extern int g_bb[5]; extern uint32_t g_bbcol; TR("bb %d %d %d %d %d %x %d", g_bb[0], g_bb[1], g_bb[2], g_bb[3], g_bb[4], g_bbcol, (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) ? 1 : 0); }
@@ -533,7 +537,7 @@ void Script::executeTask() {
 			_vid->setDataBuffer(_res->_useSegVideo2 ? _res->_segVideo2 : _res->_segVideo1, off);
 			TR("shape %d %d %d %d %d pg%d", _res->_useSegVideo2?2:1, off, pt.x, pt.y, zoom, _vid->_buffers[0]);
 			{ extern int g_bb[5]; extern uint32_t g_bbcol; g_bb[0] = g_bb[1] = 30000; g_bb[2] = g_bb[3] = -30000; g_bb[4] = 0; g_bbcol = 0; }
-			g_heroDraw = (g_heroX == 1 && g_heroY == 2);
+			g_heroDraw = (g_heroX == 1 && g_heroY == 2) || bg_is_floating(_res->_useSegVideo2 ? 2 : 1, off, zoom);
 			if (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) TR("herodraw op%02x xv%d yv%d off%d", opcode, g_heroX, g_heroY, off);
 			bg_shape(_vid->_buffers[0], _res->_useSegVideo2?2:1, off, pt.x, pt.y, zoom);
 			static int capHero = getenv("BGCAP") ? 1 : 0;
@@ -545,6 +549,7 @@ void Script::executeTask() {
 				_vid->drawShape(0xFF, zoom, &pt);
 				{ extern int g_bb[5]; extern uint32_t g_bbcol; TR("bb %d %d %d %d %d %x %d", g_bb[0], g_bb[1], g_bb[2], g_bb[3], g_bb[4], g_bbcol, (pt.x == _scriptVars[1] && pt.y == _scriptVars[2]) ? 1 : 0); }
 			}
+			g_heroDraw = 0;
 		} else {
 			if (_is3DO) {
 				switch (opcode) {

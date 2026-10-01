@@ -1,0 +1,24 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
+hold up
+waituntil game_frames >= 100 60000
+hold none
+pause
+run 120
+print game_frames
+print snd_hold w1
+screenshot /tmp/p1.ppm
+run 300
+print game_frames
+pause
+run 200
+print snd_hold w1
+print game_frames
+screenshot /tmp/p2.ppm
+psglog /tmp/ppsg.txt
+run 300
+psgstop

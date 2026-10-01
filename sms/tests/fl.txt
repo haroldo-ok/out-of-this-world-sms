@@ -1,0 +1,14 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
+waituntil game_frames >= 72 60000
+screenshot /tmp/fl_72.ppm
+waituntil game_frames >= 73 60000
+screenshot /tmp/fl_73.ppm
+waituntil game_frames >= 76 60000
+screenshot /tmp/fl_76.ppm
+waituntil game_frames >= 86 60000
+screenshot /tmp/fl_86.ppm

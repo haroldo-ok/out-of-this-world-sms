@@ -25,6 +25,13 @@ static void bg_seen_load() {
 static FILE *g_keylog = 0;     /* BGKEYS: every candidate state key, repeats included (for frequency counts) */
 static void bg_keylog(uint32_t k) { if (!g_keylog && getenv("BGKEYS")) g_keylog = fopen(getenv("BGKEYS"), "ab"); if (g_keylog) { fwrite(&k, 4, 1, g_keylog); fflush(g_keylog); } }
 static std::set<uint32_t> g_want;
+/* FLOATSET: tiny shapes (seg u8, off u16 records) kept out of the page hash like Lester */
+static std::set<uint32_t> g_float; static int g_floatLoaded = 0;
+int bg_is_floating(int seg, int off, int zoom) {
+	if (!g_floatLoaded) { g_floatLoaded = 1; const char *fn = getenv("FLOATSET");
+		if (fn) { FILE *f = fopen(fn, "rb"); uint8_t r[3]; if (f) { while (fread(r, 3, 1, f) == 1) g_float.insert((r[0] << 16) | r[1] | (r[2] << 8)); fclose(f); } } }
+	return zoom == 64 && g_float.count((seg << 16) | (off & 0xFFFF)) ? 1 : 0;
+}
 static FILE *g_prefixlog = 0;
 static void bg_prefixlog(uint32_t k, uint32_t polys) {
 	if (!g_prefixlog && getenv("BGPREFIX")) g_prefixlog = fopen(getenv("BGPREFIX"), "ab");

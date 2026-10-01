@@ -4,9 +4,4 @@ tap 1
 waituntil stage == 4 3000 w1
 run 10
 tap 1
-hold up
-run 1500
-hold right
-run 1500
-print psg_mis
-print psg_ticks
+waituntil game_frames >= 74 60000
