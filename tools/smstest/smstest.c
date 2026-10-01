@@ -178,13 +178,88 @@ static void prof_dump(const char* path) {
     printf("profdump: %s (frame %lu)\n", path, frame_no);
 }
 
+/* ---- call-graph profiler (cgstart/cgstop/cgdump; report: prof2.py) ----
+/* Exclusive: cycles per exact PC, bank-qualified for slot-1 code that is not bank 1
+ * (key = bank<<16 | pc, the same convention SDCC uses for --codeseg BANKn symbols).
+ * Inclusive: a shadow call stack driven by CALL/RST/interrupt entry and RET; each
+ * function's cycles from entry to return (outermost activation only, so recursion is
+ * not double counted), with interrupt-handler time subtracted from whatever it interrupted. */
+static uint32_t prof_key(uint16_t pc) {
+    if (pc >= 0x4000 && pc < 0x8000 && mapper[2] != 1) return ((uint32_t)mapper[2] << 16) | pc;
+    return pc;
+}
+#define PX_MAX 0x1000000
+static uint32_t* pexcl;                 /* lazily allocated [PX_MAX] */
+typedef struct { uint32_t key; unsigned long calls, incl; int active; } FStat;
+#define FS_N 16384
+static FStat fstat[FS_N];
+typedef struct { uint32_t key; uint16_t sp; unsigned long cyc0, isr0; } Frame;
+typedef struct { uint32_t par, key; unsigned long calls, incl; } Edge;
+#define ED_N 65536
+static Edge edges[ED_N];
+static Edge* ed_get(uint32_t par, uint32_t key) {
+    uint32_t h = ((par * 2654435761u) ^ (key * 40503u)) & (ED_N - 1);
+    while (edges[h].calls && (edges[h].key != key || edges[h].par != par)) h = (h + 1) & (ED_N - 1);
+    edges[h].par = par; edges[h].key = key; return &edges[h];
+}
+static Frame cstack[1024]; static int csp;
+static unsigned long isr_acc;
+static int cg_on = 0;
+static void frames_unwind(z80* z);
+static void hook_ret(z80* z) { frames_unwind(z); }
+static FStat* fs_get(uint32_t key) {
+    uint32_t h = (key * 2654435761u) & (FS_N - 1);
+    while (fstat[h].calls && fstat[h].key != key) h = (h + 1) & (FS_N - 1);
+    fstat[h].key = key; return &fstat[h];
+}
+static void hook_call(z80* z, uint16_t target) {
+    uint32_t key = prof_key(target);
+    FStat* s = fs_get(key); s->calls++; s->active++;
+    if (csp < 1024) { cstack[csp].key = key; cstack[csp].sp = z->sp; cstack[csp].cyc0 = z->cyc; cstack[csp].isr0 = isr_acc; csp++; }
+}
+static void frames_unwind(z80* z) {
+    while (csp > 0 && cstack[csp - 1].sp < z->sp) {
+        Frame* f = &cstack[--csp];
+        FStat* s = fs_get(f->key);
+        unsigned long t = z->cyc - f->cyc0;
+        int isr = (f->key == 0x38 || f->key == 0x66);
+        if (!isr) t -= (isr_acc - f->isr0);
+        if (--s->active == 0) s->incl += t;
+        { Edge* e = ed_get(csp ? cstack[csp - 1].key : 0xFFFFFF, f->key); e->calls++; e->incl += t; }
+        if (isr) isr_acc += t;
+    }
+}
+static void cg_reset(void) {
+    if (!pexcl) pexcl = calloc(PX_MAX, sizeof(uint32_t));
+    memset(pexcl, 0, PX_MAX * sizeof(uint32_t));
+    memset(fstat, 0, sizeof fstat); memset(edges, 0, sizeof edges); csp = 0; isr_acc = 0;
+}
+static unsigned long cg_cycles;
+static void cg_dump(const char* path) {
+    FILE* f = fopen(path, "w");
+    if (!f) { printf("FAIL: cannot write %s\n", path); failures++; return; }
+    fprintf(f, "T %lu\n", cg_cycles);
+    for (uint32_t i = 0; i < PX_MAX; i++) if (pexcl[i]) fprintf(f, "X %06X %u\n", i, pexcl[i]);
+    for (int i = 0; i < FS_N; i++) if (fstat[i].calls) fprintf(f, "I %06X %lu %lu\n", fstat[i].key, fstat[i].calls, fstat[i].incl);
+    for (int i = 0; i < ED_N; i++) if (edges[i].calls) fprintf(f, "E %06X %06X %lu %lu\n", edges[i].par, edges[i].key, edges[i].calls, edges[i].incl);
+    fclose(f);
+    printf("cgdump: %s (frame %lu)\n", path, frame_no);
+}
+
 /* --------------------------- frame loop --------------------------- */
 static void run_line(void) {
     unsigned long target = cpu.cyc + CYCLES_PER_LINE;
     while (cpu.cyc < target) {
         if (vdp_irq_active() && cpu.iff1) cpu.int_pending = true;
         if (cpu.sp < sp_min && cpu.sp >= 0xC000) { sp_min = cpu.sp; sp_min_pc = cpu.pc; }
-        if (profiling) {
+        if (cg_on) {
+            unsigned long before = cpu.cyc;
+            uint32_t key = prof_key(cpu.pc);
+            z80_step(&cpu);
+            pexcl[key] += cpu.cyc - before;
+            cg_cycles += cpu.cyc - before;
+            if (csp && cstack[csp - 1].sp < cpu.sp) frames_unwind(&cpu);   /* jp (hl) returns */
+        } else if (profiling) {
             unsigned long before = cpu.cyc;
             uint16_t pc = cpu.pc;
             z80_step(&cpu);
@@ -466,6 +541,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(c1, "profstart")) { prof_reset(); profiling = 1; printf("profstart (frame %lu)\n", frame_no); }
         else if (!strcmp(c1, "profstop")) { profiling = 0; printf("profstop (frame %lu)\n", frame_no); }
         else if (!strcmp(c1, "profdump") && n >= 2) prof_dump(c2);
+        else if (!strcmp(c1, "cgstart")) { cg_reset(); cg_cycles = 0; cg_on = 1; cpu.on_call = hook_call; cpu.on_ret = hook_ret; printf("cgstart (frame %lu)\n", frame_no); }
+        else if (!strcmp(c1, "cgstop")) { cg_on = 0; cpu.on_call = NULL; cpu.on_ret = NULL; printf("cgstop (frame %lu)\n", frame_no); }
+        else if (!strcmp(c1, "cgdump") && n >= 2) cg_dump(c2);
+        else if (!strcmp(c1, "frames")) printf("frames: %lu\n", frame_no);
         else if (!strcmp(c1, "expectcolors") && n >= 2) {
             /* Guards against "passing" on a blank/black frame: renders the
                current frame and counts distinct colours actually shown. */

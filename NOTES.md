@@ -238,3 +238,21 @@ Next: exclude hero draws from the page hash in both engines (oracle capture rend
   (the game samples input once per game frame, i.e. every several console frames in busy scenes).
 - Death / continue verified (PRESS BUTTON ... ACCESS CODE screen -> restart underwater), now also with a 2-frame tap.
 - Autoplay build (-DDEMOPLAY) skips the title (waits <= 1 s for an optional tap, so test scripts work for both builds).
+
+## Call-graph profiling + overlap-box index
+- tools/smstest: new cgstart / cgstop / cgdump commands (existing prof* unchanged). Shadow call stack driven by
+  CALL/RST/IRQ entry and RET, with frames also closed when SP rises above their return slot (SDCC's
+  callee-cleanup functions return with `jp (hl)`, not RET). Inclusive time per function excludes IRQ time;
+  caller->callee edges included; slot-1 code keyed bank<<16|pc. Report: tools/smstest/prof2.py dump game.noi
+  obj/*.rst [--frames N] [--tree run_tasks --depth 6]. Link with -Wl-u for the .rst files (ROM unchanged).
+- tools/recon: rebuild the exact shipped ROM without the capture pipeline (headers recovered from the ROM,
+  data banks reused): recon_headers.py, then add_bbox_index.py, then build.sh. Rebuilt code was byte-identical
+  (only SDSC date + checksum differ). bench.sh <label> [flags] runs the free-play benchmark.
+- Free play (pool, game frames 100-250, default MAXSKIP 2): ~990k cycles/game frame, never idle.
+  render_ent 58% (dpl_loop polygons 27.5% ~8/gf at 34k; plot points 6.9% ~15/gf at 4.6k, half of it
+  copy-on-write; Lester's masks 7.1%; shape-tree walk + pfetch ~8%), VM ~12%, IRQ 5% (3k cycles every
+  console frame, mostly sound), display diff+upload 3.6%, page hashing ~3.5%, bbox_find 2.7%.
+  Cache lookups/loads are now cheap (<2%); hits 91 / misses 93 in the window.
+- bbox_find: 513-entry index (bank 13 at 0xB000, built by mkconst.py) narrows the binary search to one
+  offset-high-byte bucket (max 11 entries). BBCHECK: 1136 lookups, 0 bad. Free play 2429 -> 2390 SMS
+  frames (NOFRAMESKIP 3417 -> 3367).

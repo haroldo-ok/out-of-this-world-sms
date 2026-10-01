@@ -184,6 +184,7 @@ static inline void call(z80* const z, uint16_t addr) {
   pushw(z, z->pc);
   z->pc = addr;
   z->mem_ptr = addr;
+  if (z->on_call) z->on_call(z, addr);
 }
 
 // calls to next word in memory if condition is true
@@ -200,6 +201,7 @@ static inline void cond_call(z80* const z, bool condition) {
 static inline void ret(z80* const z) {
   z->pc = popw(z);
   z->mem_ptr = z->pc;
+  if (z->on_ret) z->on_ret(z);
 }
 
 // returns from subroutine if condition is true
@@ -708,6 +710,8 @@ void z80_init(z80* const z) {
   z->port_in = NULL;
   z->port_out = NULL;
   z->userdata = NULL;
+  z->on_call = NULL;
+  z->on_ret = NULL;
 
   z->cyc = 0;
 

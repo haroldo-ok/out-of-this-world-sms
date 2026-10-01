@@ -12,6 +12,8 @@ struct z80 {
   uint8_t (*port_in)(z80*, uint8_t);
   void (*port_out)(z80*, uint8_t, uint8_t);
   void* userdata;
+  void (*on_call)(z80*, uint16_t target); // profiling hooks (may be NULL)
+  void (*on_ret)(z80*);
 
   unsigned long cyc; // cycle count (t-states)
 

@@ -2874,10 +2874,27 @@ uint8_t bbox_find(void) __naked {
     ld (#0xFFFC),a
     ld a,#CONST_BANK
     ld (#0xFFFF),a
-    ld hl,#0
-    ld (_bl_lo),hl
-    ld hl,#NBBOX-1
-    ld (_bl_hi),hl
+    ld a,(_bl_off+1)          ; 2-level index (bank 13, 0xB000): first entry per (seg, offset high byte)
+    ld l,a
+    ld h,#0
+    ld a,(_bl_seg)
+    cp #1
+    jr z,00005$
+    inc h
+00005$:
+    add hl,hl
+    ld de,#BBOX_IDX_ADDR
+    add hl,de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    inc hl
+    ld (_bl_lo),de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)
+    dec de
+    ld (_bl_hi),de
 00001$:
     ld hl,(_bl_hi)
     ld de,(_bl_lo)

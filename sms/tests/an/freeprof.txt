@@ -1,0 +1,25 @@
+symbols obj/game.noi
+run 60
+tap 1
+waituntil stage == 4 3000 w1
+run 10
+tap 1
+hold up
+waituntil game_frames >= 90 30000
+hold none
+waituntil game_frames >= 100 30000
+cgstart
+frames
+hold right
+waituntil game_frames >= 140 30000
+hold left
+waituntil game_frames >= 175 30000
+hold right+1
+waituntil game_frames >= 200 30000
+hold left
+waituntil game_frames >= 230 30000
+hold none
+waituntil game_frames >= 250 30000
+frames
+cgstop
+cgdump /tmp/pfree.txt
