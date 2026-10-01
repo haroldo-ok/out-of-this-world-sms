@@ -26,15 +26,19 @@ for fn,name,macro,ctype in ((G+'gamedata.h','pal_sms','PAL_SMS','(const uint8_t 
     defs.append('#define %s_ADDR 0x%04X'%(macro,0x8000+len(blob)))
     blob+=b''.join(struct.pack('<H' if t in ('uint16_t','int16_t') else '<B', v & (0xFFFF if t in ('uint16_t','int16_t') else 0xFF)) for v in vals)
     open(fn,'w').write(s)
-# bbox_tab index at 0xB000: first table entry per (segment 1/2, offset high byte), 513 u16 (bbox_find narrows
-# its binary search to that bucket: ~3.7k -> ~0.6k cycles per lookup)
+# bbox_tab index at 0xB000: first table entry per 64-byte offset bucket of segment 1 (1016 u16), then the first
+# segment-2 entry and the count (bbox_find narrows its binary search to one bucket: <= 4 entries here)
+def bbox_index(keys):
+    import bisect
+    n=len(keys); s2=bisect.bisect_left(keys,(2,0))
+    return [min(bisect.bisect_left(keys,(1,k<<6)),s2) for k in range(1016)]+[s2,n]
 if any(d.startswith('#define BBOX_TAB_ADDR') for d in defs):
     a=int([d for d in defs if d.startswith('#define BBOX_TAB_ADDR')][0].split()[-1],16)-0x8000
     n=[int(l.split()[2]) for l in open(G+'gamedata.h') if l.startswith('#define NBBOX')][0]
     keys=[(blob[a+12*i+2],blob[a+12*i]|(blob[a+12*i+1]<<8)) for i in range(n)]; assert keys==sorted(keys)
     import bisect
-    idx=[bisect.bisect_left(keys,(1 if k<256 else 2,(k&255)<<8)) for k in range(512)]+[n]
-    assert len(blob)<=0x3000; blob+=b'\xff'*(0x3000-len(blob)); blob+=struct.pack('<513H',*idx)
+    idx=bbox_index(keys)
+    assert len(blob)<=0x3000; blob+=b'\xff'*(0x3000-len(blob)); blob+=struct.pack('<%dH'%len(idx),*idx)
     defs.append('#define BBOX_IDX_ADDR 0xB000')
 assert len(blob)<=16384
 open(G+'const.bin','wb').write(bytes(blob)); open(G+'constdata.h','w').write('\n'.join(defs)+'\n')

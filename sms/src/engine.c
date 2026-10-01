@@ -17,6 +17,7 @@
 #define NOSPRITES
 #endif
 #include "../gen/bgdata.h"
+#include "../gen/flatdata.h"
 
 __sfr __at 0xBF VDPC;
 __sfr __at 0xBE VDPD;
@@ -2854,17 +2855,117 @@ void bg_load(uint8_t bank, uint16_t mi, uint8_t p) {
   (void)r; (void)rows; (void)rid;
   bgl_dst = page[p]; bgl_drow = drow[p]; bgl_pid = prowid[p]; bgl_do();
 }
+uint8_t bbox_lookup(uint8_t seg, uint16_t off);
+extern uint16_t bl_idx;
+/* zoom 64: draw the shape's flattened leaf list (game/mkflat.py) instead of walking the hierarchy; 0 = not available */
+uint8_t rf_n, rf_fb, rf_kind, rf_color; uint16_t rf_fa, rf_off; int16_t rf_x, rf_y;
+
+/* uncommon leaves (masks, colours >= 16, hero canvas): the normal C entry points, position in fp_px/fp_py */
+void rf_leaf(void) {
+  if (rf_kind) draw_sprite_mask((uint8_t)rf_off, fp_px, fp_py, rf_color);
+  else { poly_off = rf_off; fill_polygon(rf_color, 64, fp_px, fp_py); }
+}
+void rf_loop(void) __naked {
+  __asm
+00001$:
+    ld a,(_rf_n)
+    or a
+    ret z
+    dec a
+    ld (_rf_n),a
+    ld a,(_rf_fb)              ; map_rom(rf_fb): the previous leaf may have remapped slot 2
+    ld hl,#_slot2
+    cp (hl)
+    jr z,00002$
+    ld (hl),a
+    ld c,a
+    xor a
+    ld (#0xFFFC),a
+    ld a,c
+    ld (#0xFFFF),a
+00002$:
+    ld hl,(_rf_fa)
+    ld b,(hl)                  ; kind
+    inc hl
+    ld c,(hl)                  ; colour
+    inc hl
+    ld e,(hl)
+    inc hl
+    ld d,(hl)                  ; off / mask number
+    inc hl
+    ld (_rf_off),de
+    ld e,(hl)
+    inc hl
+    ld d,(hl)                  ; dx
+    inc hl
+    push hl
+    ld hl,(_rf_x)
+    add hl,de
+    ld (_fp_px),hl
+    pop hl
+    ld e,(hl)
+    inc hl
+    ld d,(hl)                  ; dy
+    inc hl
+    ld (_rf_fa),hl
+    ld hl,(_rf_y)
+    add hl,de
+    ld (_fp_py),hl
+    ld a,b
+    or a
+    jr nz,00010$
+    ld a,c                     ; fill_polygon fast-path conditions (zoom is 64 here)
+    cp #16
+    jr nc,00010$
+    ld a,(_hero_mode)
+    ld hl,#_bbm
+    or (hl)
+    jr nz,00010$
+    ld a,c
+    ld (_fp_color),a
+    ld hl,(_rf_off)
+    ld (_poly_off),hl
+    call _fp_fast
+    jr 00001$
+00010$:
+    ld a,b
+    ld (_rf_kind),a
+    ld a,c
+    ld (_rf_color),a
+    call _rf_leaf
+    jr 00001$
+  __endasm;
+}
+/* zoom 64: draw the shape's flattened leaf list (game/mkflat.py) instead of walking the hierarchy; 0 = not available */
+uint8_t render_flat(defent *e) {
+  const uint8_t *d;
+  if (!bbox_lookup(e->ks & 0x0F, e->off)) return 0;
+  map_rom(FLAT_BANK0);
+  d = (const uint8_t *)(FLAT_DIR_ADDR + bl_idx * 3);
+  if (!(rf_fb = d[0])) return 0;
+  rf_fa = d[1] | ((uint16_t)d[2] << 8);
+  map_rom(rf_fb); rf_n = *(const uint8_t *)rf_fa; rf_fa++;
+  rf_x = e->x; rf_y = e->y;
+  rf_loop();
+  return 1;
+}
 void render_ent(defent *e) {
   uint8_t save = buf[0];
   buf[0] = e->pg;
-  if (e->ks & 0x80) { poly_bank0 = ((e->ks & 0x0F) == 2) ? V2_BANK : V1_BANK; poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); }
+  if (e->ks & 0x80) {
+    poly_bank0 = ((e->ks & 0x0F) == 2) ? V2_BANK : V1_BANK;
+#ifndef NOFLAT
+    if (e->zoom != 64 || !render_flat(e))
+#endif
+    { poly_off = e->off; draw_shape(0xFF, e->zoom, e->x, e->y); }
+  }
   else draw_string((uint8_t)e->zoom, e->x, e->y, e->off);
   buf[0] = save;
 }
 defent hero_e[2];
 /* relative box of shape (seg, off) at zoom 64 from the offline table (mkbbox.py); 1 = found */
 int16_t tb[4];
-uint8_t bl_seg; uint16_t bl_off; int16_t bl_lo, bl_hi;
+uint8_t bl_seg; uint16_t bl_off, bl_idx; int16_t bl_lo, bl_hi;
 /* binary search of (bl_seg, bl_off) in the 12-byte entries of BBOX_TAB; A = 1 and tb[] filled when found */
 uint8_t bbox_find(void) __naked {
   __asm
@@ -2874,13 +2975,23 @@ uint8_t bbox_find(void) __naked {
     ld (#0xFFFC),a
     ld a,#CONST_BANK
     ld (#0xFFFF),a
-    ld a,(_bl_off+1)          ; 2-level index (bank 13, 0xB000): first entry per (seg, offset high byte)
-    ld l,a
-    ld h,#0
+    ld hl,#1016               ; index (bank 13): segment 1 -> bucket off>>6, segment 2 -> bucket 1016
     ld a,(_bl_seg)
     cp #1
-    jr z,00005$
-    inc h
+    jr nz,00005$
+    ld hl,(_bl_off)
+    ld a,l
+    rlca
+    rlca
+    and #3
+    ld c,a
+    ld l,h
+    ld h,#0
+    add hl,hl
+    add hl,hl
+    ld a,l
+    or c
+    ld l,a
 00005$:
     add hl,hl
     ld de,#BBOX_IDX_ADDR
@@ -2931,6 +3042,7 @@ uint8_t bbox_find(void) __naked {
     cp (hl)
     jr nz,00012$
     pop de
+    ld (_bl_idx),de
     ld de,#4
     add hl,de
     ld de,#_tb

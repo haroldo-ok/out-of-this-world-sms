@@ -256,3 +256,19 @@ Next: exclude hero draws from the page hash in both engines (oracle capture rend
 - bbox_find: 513-entry index (bank 13 at 0xB000, built by mkconst.py) narrows the binary search to one
   offset-high-byte bucket (max 11 entries). BBCHECK: 1136 lookups, 0 bad. Free play 2429 -> 2390 SMS
   frames (NOFRAMESKIP 3417 -> 3367).
+
+## Flattened shape hierarchies (zoom 64)
+- game/mkflat.py (run after mkconst.py): every one of the 742 table shapes that is a hierarchy (739) expands, at
+  zoom 64, to a fixed ordered leaf list (polygon offset + final colour, or mask number + colour; dx/dy relative to
+  the anchor, the same int16 sums the walk computes). Directory (742 x bank/addr) + lists in banks 14-17 (6743
+  leaves, max 163 per shape, 57 KB). bbox_find now also returns the entry index (bl_idx).
+- render_ent: zoom 64 + table hit -> render_flat (rf_loop in asm: per leaf remap the list bank, read 8 bytes, go
+  straight to fp_fast when the fill_polygon fast-path conditions hold, else rf_leaf -> fill_polygon /
+  draw_sprite_mask). -DNOFLAT restores the walk. Removes the draw_shape_parts recursion, ~4-6 pfetch per node and
+  SCL; less stack (route low 0xDE7B -> 0xDED1).
+- bbox index refined: 64-byte offset buckets for segment 1 (1018 u16 at 0xB000, max 4 entries per bucket).
+- Exactness: smstest `hooklog <sym> <file>` hashes the rendered screen on every entry to <sym>. With
+  -DNOFRAMESKIP, upstream c3f71cb vs this build: free play (250 displays, 243 distinct) and the full recorded route
+  (-DDEMOPLAY, 765 displays, 741 distinct, capture exit at game frame 764) are identical. BBCHECK 1130/0 bad.
+- Free play 100-250: 2429 (upstream) -> 2390 (bbox index) -> 2246 SMS frames; NOFRAMESKIP 3417 -> 3367 -> 3163.
+  Route (NOFRAMESKIP) 12605 -> 11895. Fixed code 739 bytes free; RAM data ends 0xDE0C.

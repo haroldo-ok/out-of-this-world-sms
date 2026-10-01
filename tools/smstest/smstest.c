@@ -246,12 +246,14 @@ static void cg_dump(const char* path) {
     printf("cgdump: %s (frame %lu)\n", path, frame_no);
 }
 
+static uint16_t hook_pc; static int hook_on; static void hook_fire(void);
 /* --------------------------- frame loop --------------------------- */
 static void run_line(void) {
     unsigned long target = cpu.cyc + CYCLES_PER_LINE;
     while (cpu.cyc < target) {
         if (vdp_irq_active() && cpu.iff1) cpu.int_pending = true;
         if (cpu.sp < sp_min && cpu.sp >= 0xC000) { sp_min = cpu.sp; sp_min_pc = cpu.pc; }
+        if (hook_on && cpu.pc == hook_pc) hook_fire();
         if (cg_on) {
             unsigned long before = cpu.cyc;
             uint32_t key = prof_key(cpu.pc);
@@ -298,8 +300,18 @@ static void dump_state(const char* path) {
     printf("dumpstate: %s (frame %lu)\n", path, frame_no);
 }
 
+static uint8_t img[192][256][3];
+static void render_image(void);
 static void render_screenshot(const char* path) {
-    static uint8_t img[192][256][3];
+    render_image();
+    FILE* f = fopen(path, "wb");
+    if (!f) { printf("FAIL: cannot write %s\n", path); failures++; return; }
+    fprintf(f, "P6\n256 192\n255\n");
+    fwrite(img, 1, sizeof img, f);
+    fclose(f);
+    printf("screenshot: %s (frame %lu)\n", path, frame_no);
+}
+static void render_image(void) {
     static uint8_t bg_over[192][256];   /* priority tile with a non-zero pixel */
     memset(bg_over, 0, sizeof bg_over);
     uint16_t ntbase = (uint16_t)(vdp_reg[2] & 0x0E) << 10;
@@ -382,14 +394,16 @@ static void render_screenshot(const char* path) {
                 color_rgb(cram[16 + (vdp_reg[7] & 0x0F)], img[y][x]);
             }
     }
-    FILE* f = fopen(path, "wb");
-    if (!f) { printf("FAIL: cannot write %s\n", path); failures++; return; }
-    fprintf(f, "P6\n256 192\n255\n");
-    fwrite(img, 1, sizeof img, f);
-    fclose(f);
-    printf("screenshot: %s (frame %lu)\n", path, frame_no);
 }
 
+/* hooklog <sym> <file>: on every entry to <sym>, hash the rendered screen (what the previous call left) */
+static FILE* hook_f; static unsigned long hook_n;
+static void hook_fire(void) {
+    render_image();
+    uint64_t h = 1469598103934665603ULL; const uint8_t* p = &img[0][0][0];
+    for (size_t i = 0; i < sizeof img; i++) { h ^= p[i]; h *= 1099511628211ULL; }
+    fprintf(hook_f, "%lu %016llx\n", hook_n++, (unsigned long long)h);
+}
 /* --------------------------- symbols ------------------------------ */
 typedef struct { char name[64]; uint32_t addr; } Sym;
 static Sym syms[4096]; static int nsyms;
@@ -544,6 +558,12 @@ int main(int argc, char** argv) {
         else if (!strcmp(c1, "cgstart")) { cg_reset(); cg_cycles = 0; cg_on = 1; cpu.on_call = hook_call; cpu.on_ret = hook_ret; printf("cgstart (frame %lu)\n", frame_no); }
         else if (!strcmp(c1, "cgstop")) { cg_on = 0; cpu.on_call = NULL; cpu.on_ret = NULL; printf("cgstop (frame %lu)\n", frame_no); }
         else if (!strcmp(c1, "cgdump") && n >= 2) cg_dump(c2);
+        else if (!strcmp(c1, "hooklog") && n >= 3) {
+            uint32_t a; if (!sym_lookup(c2, &a)) { printf("FAIL: no symbol %s\n", c2); failures++; continue; }
+            hook_pc = (uint16_t)a; hook_f = fopen(c3, "w"); hook_on = hook_f != NULL; hook_n = 0;
+            printf("hooklog: %s @%04X -> %s\n", c2, hook_pc, c3);
+        }
+        else if (!strcmp(c1, "hookstop")) { if (hook_f) fclose(hook_f); hook_f = NULL; hook_on = 0; printf("hookstop: %lu entries\n", hook_n); }
         else if (!strcmp(c1, "frames")) printf("frames: %lu\n", frame_no);
         else if (!strcmp(c1, "expectcolors") && n >= 2) {
             /* Guards against "passing" on a blank/black frame: renders the

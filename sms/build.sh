@@ -24,4 +24,4 @@ print('fixed code ends at 0x%04X (%d bytes free before the header)'%(end,0x7FF0-
 assert end<=0x7FF0,'fixed code overflows into the ROM header'
 PY
 $DK/bin/ihx2sms obj/game.ihx obj/code.sms
-python3 mkrom.py ootw.sms obj/code.sms ${BLOBS:-2:gen/game.bin 13:gen/const.bin 64:gen/fmv.bin 150:gen/bg.bin}
+python3 mkrom.py ootw.sms obj/code.sms ${BLOBS:-2:gen/game.bin 13:gen/const.bin 14:gen/flat.bin 64:gen/fmv.bin 150:gen/bg.bin}
